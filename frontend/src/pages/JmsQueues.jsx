@@ -511,41 +511,55 @@ const JmsQueues = () => {
       <TopBar />
       <Container maxWidth="xl" sx={{ pt: { xs: 3, md: 5 } }}>
         <Stack spacing={2.5}>
-          <Paper
-            elevation={0}
-            sx={{
-              p: { xs: 2.5, md: 3 },
-              borderRadius: 2,
-              border: "1px solid #d7dee8",
-              background: "#ffffff"
-            }}
-          >
-            <Stack
-              direction={{ xs: "column", sm: "row" }}
-              justifyContent="space-between"
-              alignItems={{ xs: "flex-start", sm: "center" }}
-              spacing={1.5}
-            >
-              <Box>
-                <Typography variant="h4" fontWeight="bold">
-                  JMS Queues
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                </Typography>
-              </Box>
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25}>
-                <Button
-                  variant="contained"
-                  startIcon={<RefreshRoundedIcon />}
-                  onClick={loadQueues}
-                  disabled={queuesLoading}
-                  sx={{ borderRadius: 2, background: "#0b84d6" }}
-                >
-                  {queuesLoading ? "Loading..." : "Refresh"}
-                </Button>
-              </Stack>
-            </Stack>
-          </Paper>
+<Paper
+  elevation={0}
+  sx={{
+    p: { xs: 2.5, md: 3 },
+    borderRadius: 2,
+    border: "1px solid rgba(15, 23, 42, 0.08)",
+    background: "rgba(13, 129, 182, 0.8)",
+    color: "#ffffff"
+  }}
+>
+  <Stack
+    direction={{ xs: "column", sm: "row" }}
+    justifyContent="space-between"
+    alignItems={{ xs: "flex-start", sm: "center" }}
+    spacing={1.5}
+  >
+    {/* LEFT TEXT */}
+    <Box>
+      <Typography variant="h5" fontWeight="bold">
+        JMS Queues
+      </Typography>
+    </Box>
+
+    {/* RIGHT BUTTON */}
+    <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25}>
+      <Button
+        variant="contained"
+        startIcon={<RefreshRoundedIcon />}
+        onClick={loadQueues}
+        disabled={queuesLoading}
+        sx={{
+          borderRadius: 2,
+          backgroundColor: "#ffffff",
+          color: "#0d81b6",
+
+          "& .MuiSvgIcon-root": {
+            color: "#0d81b6"
+          },
+
+          "&:hover": {
+            backgroundColor: "#e0f2fe"
+          }
+        }}
+      >
+        {queuesLoading ? "Loading..." : "Refresh"}
+      </Button>
+    </Stack>
+  </Stack>
+</Paper>
 
           {error && (
             <Box

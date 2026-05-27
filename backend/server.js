@@ -331,12 +331,6 @@ const extractCookieHeader = (setCookieHeader) => {
     .join("; ");
 };
 
-const formatBodyWithLineNumbers = (body) =>
-  String(body || "")
-    .split(/\r?\n/)
-    .map((line, index) => `${index + 1}: ${line}`)
-    .join("\n");
-
 const isAuthoritativeTenantError = (error) => {
   const status = Number(error?.response?.status || 0);
   const code = String(error?.response?.data?.error?.code || "").trim().toLowerCase();
@@ -1215,9 +1209,6 @@ const getODataCsrfContext = async (serviceBaseUrl, token) => {
       }
     } catch (error) {
       lastError = error;
-      console.warn(
-        `[csrf] failed ${candidatePath}: status=${error.response?.status || ""} content-type=${error.response?.headers?.["content-type"] || ""} body=${typeof error.response?.data === "string" ? error.response.data.slice(0, 300) : JSON.stringify(error.response?.data || error.message).slice(0, 300)}`
-      );
     }
   }
 
@@ -1287,9 +1278,6 @@ const getApiCsrfContext = async (serviceBaseUrl, token) => {
       }
     } catch (error) {
       lastError = error;
-      console.warn(
-        `[api-csrf] failed ${candidatePath}: status=${error.response?.status || ""} content-type=${error.response?.headers?.["content-type"] || ""} body=${typeof error.response?.data === "string" ? error.response.data.slice(0, 300) : JSON.stringify(error.response?.data || error.message).slice(0, 300)}`
-      );
     }
   }
 
@@ -1330,8 +1318,6 @@ const moveJmsMessageDirect = async (baseUrl, token, sourceQueueName, targetQueue
         ...(queueEntity && typeof queueEntity === "object" ? queueEntity : {})
       };
 
-      console.log(`[move-direct] csrfPresent=${Boolean(csrfToken)} cookiePresent=${Boolean(cookieHeader)}`);
-
       await axios.request({
         method: "PATCH",
         url:
@@ -1347,8 +1333,6 @@ const moveJmsMessageDirect = async (baseUrl, token, sourceQueueName, targetQueue
         },
         timeout: 30000
       });
-
-      console.log(`[move-direct] success for ${jmsMessageId} on ${serviceBaseUrl}`);
       return;
     } catch (error) {
       lastError = error;
@@ -1633,8 +1617,6 @@ const retryJmsMessageDirect = async (baseUrl, token, sourceQueueName, jmsMessage
         ...(queueEntity && typeof queueEntity === "object" ? queueEntity : {})
       };
 
-      console.log(`[retry-direct] csrfPresent=${Boolean(csrfToken)} cookiePresent=${Boolean(cookieHeader)}`);
-
       await axios.request({
         method: "PATCH",
         url:
@@ -1649,8 +1631,6 @@ const retryJmsMessageDirect = async (baseUrl, token, sourceQueueName, jmsMessage
         },
         timeout: 30000
       });
-
-      console.log(`[retry-direct] success for ${jmsMessageId} on ${serviceBaseUrl}`);
       return;
     } catch (error) {
       lastError = error;

@@ -172,7 +172,7 @@ const TenantAccess = () => {
     maxWidth: 720,
     p: 4,
     borderRadius: 3,
-    background: "rgb(98, 151, 219)",
+    background: "rgba(13, 129, 182, 0.8)",
     backdropFilter: "blur(12px)",
     boxShadow: "0 25px 60px rgba(0,0,0,0.08)"
   }}
