@@ -4,6 +4,7 @@ Tenant Access is a full-stack SAP Integration Suite / CPI utility with two main 
 
 - `Message Monitoring Overview`
 - `JMS Queues`
+- `Tenant Assistant` chatbot overlay
 
 The app has a React frontend and an Express backend. A user connects to a tenant with OAuth client credentials, then uses the app to:
 
@@ -12,6 +13,7 @@ The app has a React frontend and an Express backend. A user connects to a tenant
 - view monitoring data stored in SAP HANA
 - inspect payloads and export reports
 - manage JMS queue messages with `Move`, `Retry`, and `Delete`
+- ask the chatbot for the same operational data and actions available manually in the UI
 
 ## UI Structure
 
@@ -19,6 +21,8 @@ After tenant connection, the user lands on a simple launcher screen in [frontend
 
 - `JMS Queues`
 - `Message Monitoring Overview`
+
+The chatbot is mounted globally in [frontend/src/App.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/App.jsx) through [frontend/src/components/AppChatbot.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/components/AppChatbot.jsx). It appears as a floating assistant button and can answer prompts about the same operational areas available from the UI.
 
 Frontend routes are defined in [frontend/src/App.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/App.jsx):
 
@@ -58,6 +62,54 @@ This UI is used for:
 - moving queue messages
 - retrying queue messages
 - deleting queue messages
+
+### 3. Tenant Assistant Chatbot
+
+Implemented in [frontend/src/components/AppChatbot.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/components/AppChatbot.jsx) with backend routing in [backend/server.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/server.js).
+
+The chatbot is rule-based and project-aware. It only answers prompts related to the application domain. If the prompt does not contain supported operational keywords, it responds with a not-applicable message.
+
+Supported prompt areas:
+
+- monitoring status
+- error and failed messages
+- reports
+- payloads
+- Excel export
+- payload zip download
+- email report sending
+- packages
+- artifacts
+- JMS queues
+- JMS queue messages
+- JMS resource details
+- JMS move
+- JMS retry
+- JMS delete
+
+Example prompts:
+
+```text
+past hour error messages
+show past hour error messages
+show JMS queues
+show messages in queue JMS_Queue_100
+show JMS resources
+move ID:10.147.158.688a3119dc16a96700:180 from JMS_Queue_100_DLQ to JMS_Queue_100
+retry ID:10.147.158.688a3119dc16a96700:180 from JMS_Queue_100_DLQ
+delete ID:10.147.158.688a3119dc16a96700:180 from JMS_Queue_100_DLQ
+download excel report
+download payload zip
+send excel report to user@example.com
+show packages
+show artifacts for package All
+```
+
+Follow-up behavior:
+
+- If the user asks for a count, such as `past hour error messages`, the chatbot gives the count and asks whether to show the rows.
+- If the user replies `yes`, `show`, or `list`, the chatbot lists the pending result set.
+- If the prompt is outside the supported application keywords, the chatbot returns `Not applicable question`.
 
 ## Current Frontend Runtime Config
 
@@ -149,6 +201,59 @@ Response includes:
 - `cached`
 - `partial`
 - `failedPackages`
+
+### Chatbot API
+
+#### `POST /chatbot/query`
+
+Processes a prompt and dispatches it to the same backend capabilities used by the manual UI.
+
+Request body:
+
+```json
+{
+  "prompt": "past hour error messages",
+  "token": "tenant-access-token",
+  "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com",
+  "packages": []
+}
+```
+
+Response shape:
+
+```json
+{
+  "message": "Found 5 matching monitoring message(s) in the past hour. Do you want to see them?",
+  "items": [],
+  "pendingItems": [],
+  "actions": [],
+  "notApplicable": false
+}
+```
+
+Main response fields:
+
+- `message`: chatbot text shown to the user
+- `items`: rows to display immediately
+- `pendingItems`: rows saved for a follow-up `yes`, `show`, or `list`
+- `actions`: downloadable or executable actions, such as Excel export
+- `notApplicable`: true when the prompt is outside the application domain
+
+Supported backend dispatch:
+
+- monitoring report count/list from HANA
+- error and status filtering
+- payload zip action
+- Excel download action
+- email action when an email address is provided
+- package listing from local session data
+- artifact listing from CPI APIs
+- JMS queue listing
+- JMS queue message listing
+- JMS resource details
+- JMS move execution
+- JMS retry execution
+- JMS delete execution
 
 ### Message Monitoring Overview APIs
 
@@ -469,6 +574,23 @@ Frontend notes from current code:
 - `Delete` uses typed confirmation: user must type `DELETE`
 - `Move` opens target queue dialog
 
+### Tenant Assistant Chatbot Flow
+
+1. User clicks the floating assistant button.
+2. User enters a prompt.
+3. Frontend sends `POST /chatbot/query` with:
+   - prompt
+   - tenant token
+   - tenant base URL
+   - stored packages
+4. Backend checks whether the prompt belongs to the supported app domain.
+5. Backend dispatches to monitoring, packages/artifacts, or JMS logic.
+6. Frontend renders:
+   - text answer
+   - matching rows
+   - follow-up list results
+   - download/action buttons
+
 ## Environment Variables
 
 Create `backend/.env`.
@@ -549,6 +671,7 @@ npm run build
 - JMS `Delete` is working
 - JMS `Retry` route exists and should be tested against your tenant with failed messages
 - HANA monitoring data is still a core part of the `Message Monitoring Overview` UI
+- Chatbot support is rule-based and limited to project features already available manually
 
 ## Quick Test Flow
 
@@ -565,6 +688,12 @@ npm run build
    - test `Move`
    - test `Retry`
    - test `Delete`
+8. For chatbot:
+   - click the assistant button
+   - ask `past hour error messages`
+   - reply `yes`
+   - ask `show JMS queues`
+   - ask `download excel report`
 
 ## Files To Know
 

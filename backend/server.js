@@ -31,6 +31,16 @@ const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
+const BASE_URL = process.env.BASE_URL;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env.AI_INTENT_API_KEY;
+const AI_INTENT_MODEL = process.env.AI_INTENT_MODEL || "openrouter/auto";
+const AI_INTENT_ENDPOINT =
+  process.env.AI_INTENT_ENDPOINT ||
+  (AI_INTENT_MODEL.includes("/")
+    ? "https://openrouter.ai/api/v1/chat/completions"
+    : "https://api.openai.com/v1/chat/completions");
+const AI_INTENT_APP_URL = process.env.AI_INTENT_APP_URL || "http://localhost:5173";
+const AI_INTENT_APP_NAME = process.env.AI_INTENT_APP_NAME || "Tenant Access";
 
 const missingEnv = ["TOKEN_URL", "CLIENT_ID", "CLIENT_SECRET"].filter(
   (key) => !process.env[key]
@@ -702,6 +712,25 @@ const parseSapDate = (sapDate) => {
     return match ? parseInt(match[1]) : null;
 };
 
+const sapDateToMs = (value) => {
+  if (!value) {
+    return 0;
+  }
+
+  if (typeof value === "number") {
+    return value;
+  }
+
+  const text = String(value).trim();
+  const sapMs = parseSapDate(text);
+  if (sapMs) {
+    return sapMs;
+  }
+
+  const parsed = Date.parse(text);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
 const unwrapODataResults = (payload) => {
   if (Array.isArray(payload)) {
     return payload;
@@ -950,6 +979,28 @@ const mapQueueRecord = (queue, index) => ({
       )
     ) || 0
 });
+
+const isProblemJmsQueue = (queue) => {
+  const name = String(queue.name || queue.key || "").toLowerCase();
+  const state = String(queue.state || "").toLowerCase();
+  const usage = String(queue.usage || "").toLowerCase();
+  const accessType = String(queue.accessType || "").toLowerCase();
+
+  return (
+    /\b(dlq|dead|failed|failure|error|exception)\b/i.test(name) ||
+    name.includes("_dlq") ||
+    name.includes("-dlq") ||
+    state.includes("fail") ||
+    state.includes("error") ||
+    state.includes("stopped") ||
+    usage.includes("fail") ||
+    usage.includes("error") ||
+    usage.includes("stopped") ||
+    accessType.includes("error")
+  );
+};
+
+const filterProblemJmsQueues = (queues) => queues.filter(isProblemJmsQueue);
 
 const collectNestedMessageRows = (payload) => {
   const directRows = unwrapODataResults(payload);
@@ -1933,6 +1984,1300 @@ const getJmsMessagesForQueue = async (baseUrl, token, queueName, queueKey) => {
   throw lastError || new Error(`Unable to fetch messages for queue ${queueName || queueKey}.`);
 };
 
+const normalizePrompt = (value) => String(value || "").trim();
+
+const TENANT_CHAT_TOOLS = {
+  get_monitoring_overview: {
+    label: "Monitoring overview",
+    category: "monitoring",
+    mode: "live-or-saved",
+    method: "GET",
+    resources: ["MessageProcessingLogs", "HANA CPI_DATA"],
+    auth: "tenant-bearer-token",
+    csrf: false,
+    description: "Summarizes the same monitoring data shown in the Monitoring Overview UI."
+  },
+  get_monitoring_logs: {
+    label: "Message processing logs",
+    category: "monitoring",
+    mode: "live-or-saved",
+    method: "GET",
+    resources: ["MessageProcessingLogs"],
+    auth: "tenant-bearer-token",
+    csrf: false,
+    description: "Fetches tenant message logs with status, time-range, and list/count output."
+  },
+  export_monitoring_excel: {
+    label: "Monitoring Excel export",
+    category: "monitoring",
+    mode: "saved-report",
+    method: "GET",
+    resources: ["HANA CPI_DATA"],
+    auth: "app-backend",
+    csrf: false,
+    description: "Creates the Excel export for the latest saved monitoring report."
+  },
+  download_payload_zip: {
+    label: "Payload ZIP export",
+    category: "monitoring",
+    mode: "saved-report",
+    method: "GET",
+    resources: ["HANA CPI_DATA"],
+    auth: "app-backend",
+    csrf: false,
+    description: "Creates a ZIP of saved payload files."
+  },
+  send_monitoring_email: {
+    label: "Email monitoring report",
+    category: "monitoring",
+    mode: "saved-report",
+    method: "POST",
+    resources: ["HANA CPI_DATA", "SMTP"],
+    auth: "app-backend",
+    csrf: false,
+    description: "Sends the saved monitoring Excel report to a recipient."
+  },
+  list_packages: {
+    label: "Integration packages",
+    category: "integration-content",
+    mode: "live",
+    method: "GET",
+    resources: ["IntegrationPackages"],
+    auth: "tenant-bearer-token",
+    csrf: false,
+    description: "Lists packages from the connected tenant."
+  },
+  list_artifacts: {
+    label: "Integration artifacts",
+    category: "integration-content",
+    mode: "live",
+    method: "GET",
+    resources: ["IntegrationPackages/IntegrationDesigntimeArtifacts"],
+    auth: "tenant-bearer-token",
+    csrf: false,
+    description: "Lists artifacts for one package or all packages from the connected tenant."
+  },
+  list_jms_queues: {
+    label: "JMS queues",
+    category: "jms",
+    mode: "live",
+    method: "GET",
+    resources: ["Queues"],
+    auth: "tenant-bearer-token",
+    csrf: false,
+    description: "Lists JMS queues from the connected tenant."
+  },
+  list_jms_messages: {
+    label: "JMS queue messages",
+    category: "jms",
+    mode: "live",
+    method: "GET",
+    resources: ["Queues/Messages"],
+    auth: "tenant-bearer-token",
+    csrf: false,
+    description: "Lists messages for a selected JMS queue."
+  },
+  get_jms_resources: {
+    label: "JMS broker resources",
+    category: "jms",
+    mode: "live",
+    method: "GET",
+    resources: ["JmsBrokers"],
+    auth: "tenant-bearer-token",
+    csrf: false,
+    description: "Reads JMS broker queue and capacity usage."
+  },
+  move_jms_message: {
+    label: "Move JMS message",
+    category: "jms",
+    mode: "live-action",
+    method: "PATCH/POST batch",
+    resources: ["Queues", "JmsMessages"],
+    auth: "tenant-bearer-token",
+    csrf: true,
+    description: "Moves a JMS message between queues using tenant CSRF-protected calls."
+  },
+  retry_jms_message: {
+    label: "Retry JMS message",
+    category: "jms",
+    mode: "live-action",
+    method: "PATCH/MERGE/POST batch",
+    resources: ["Queues", "JmsMessages"],
+    auth: "tenant-bearer-token",
+    csrf: true,
+    description: "Retries a failed JMS message using tenant CSRF-protected calls."
+  },
+  delete_jms_message: {
+    label: "Delete JMS message",
+    category: "jms",
+    mode: "live-action",
+    method: "DELETE",
+    resources: ["JmsMessages"],
+    auth: "tenant-bearer-token",
+    csrf: true,
+    description: "Deletes a JMS message from the connected tenant."
+  },
+  trigger_cpi_flow: {
+    label: "Trigger CPI flow",
+    category: "cpi-trigger",
+    mode: "live-action",
+    method: "POST",
+    resources: ["Configured CPI trigger endpoint"],
+    auth: "trigger-client-credentials",
+    csrf: false,
+    description: "Guides CPI trigger requests through the existing Monitoring Overview flow."
+  }
+};
+
+const getTenantIdFromBaseUrl = (baseUrl) => {
+  const cleanedBaseUrl = cleanUrl(baseUrl);
+
+  if (!cleanedBaseUrl) {
+    return "";
+  }
+
+  try {
+    return new URL(cleanedBaseUrl).hostname.toLowerCase();
+  } catch {
+    return cleanedBaseUrl.toLowerCase();
+  }
+};
+
+const createChatbotTenantContext = ({ token, baseUrl, packages }) => {
+  const cleanedBaseUrl = cleanUrl(baseUrl);
+
+  return {
+    token,
+    baseUrl: cleanedBaseUrl,
+    tenantId: getTenantIdFromBaseUrl(cleanedBaseUrl),
+    packages: Array.isArray(packages) ? packages : [],
+    hasTenantConnection: Boolean(token && cleanedBaseUrl)
+  };
+};
+
+const hasAnyTerm = (text, terms) => terms.some((term) => text.includes(term));
+
+const classifyChatbotIntent = (prompt) => {
+  const text = normalizePrompt(prompt);
+  const normalized = text.toLowerCase();
+  const wantsExport = hasAnyTerm(normalized, ["download", "export", "excel", "zip"]);
+  const wantsPayload = hasAnyTerm(normalized, ["payload", "attachment"]);
+  const wantsEmail = hasAnyTerm(normalized, ["email", "mail", "send report"]);
+  const wantsOverview =
+    hasAnyTerm(normalized, ["what all", "what data", "available data", "overview", "dashboard", "interface"]) &&
+    hasAnyTerm(normalized, ["monitor", "message", "data", "field", "column", "show"]);
+
+  if (!text) {
+    return { tool: "unsupported", confidence: 0, reason: "empty-prompt", prompt: text };
+  }
+
+  if (wantsEmail) {
+    return { tool: "send_monitoring_email", confidence: 0.92, reason: "email-report-request", prompt: text };
+  }
+
+  if (wantsExport && hasAnyTerm(normalized, ["excel", "report"])) {
+    return { tool: "export_monitoring_excel", confidence: 0.94, reason: "excel-export-request", prompt: text };
+  }
+
+  if (wantsExport && (wantsPayload || normalized.includes("zip"))) {
+    return { tool: "download_payload_zip", confidence: 0.94, reason: "payload-export-request", prompt: text };
+  }
+
+  if (hasAnyTerm(normalized, ["jms", "queue", "broker", "retry", "delete", "move"])) {
+    if (hasAnyTerm(normalized, ["move"])) {
+      return { tool: "move_jms_message", confidence: 0.9, reason: "jms-move-request", prompt: text };
+    }
+
+    if (hasAnyTerm(normalized, ["retry"])) {
+      return { tool: "retry_jms_message", confidence: 0.9, reason: "jms-retry-request", prompt: text };
+    }
+
+    if (hasAnyTerm(normalized, ["delete", "remove"])) {
+      return { tool: "delete_jms_message", confidence: 0.9, reason: "jms-delete-request", prompt: text };
+    }
+
+    if (hasAnyTerm(normalized, ["resource", "capacity", "usage", "broker"])) {
+      return { tool: "get_jms_resources", confidence: 0.88, reason: "jms-resource-request", prompt: text };
+    }
+
+    if (hasAnyTerm(normalized, ["message", "messages"]) && !normalized.includes("queues")) {
+      return { tool: "list_jms_messages", confidence: 0.82, reason: "jms-message-request", prompt: text };
+    }
+
+    return { tool: "list_jms_queues", confidence: 0.86, reason: "jms-queue-request", prompt: text };
+  }
+
+  if (hasAnyTerm(normalized, ["artifact", "artifacts", "iflow"])) {
+    if (hasAnyTerm(normalized, ["trigger", "run", "execute"])) {
+      return { tool: "trigger_cpi_flow", confidence: 0.78, reason: "cpi-trigger-request", prompt: text };
+    }
+
+    return { tool: "list_artifacts", confidence: 0.86, reason: "artifact-request", prompt: text };
+  }
+
+  if (hasAnyTerm(normalized, ["package", "packages"])) {
+    return { tool: "list_packages", confidence: 0.86, reason: "package-request", prompt: text };
+  }
+
+  if (
+    wantsOverview ||
+    hasAnyTerm(normalized, ["monitoring", "monitor", "status", "failed", "failure", "error", "completed", "processing", "message", "messages", "report", "reports", "payload"])
+  ) {
+    return {
+      tool: wantsOverview ? "get_monitoring_overview" : "get_monitoring_logs",
+      confidence: wantsOverview ? 0.88 : 0.82,
+      reason: wantsOverview ? "monitoring-overview-request" : "monitoring-log-request",
+      prompt: text
+    };
+  }
+
+  return { tool: "unsupported", confidence: 0.1, reason: "no-supported-tool", prompt: text };
+};
+
+const CHATBOT_INTENT_SCHEMA = {
+  tool: Object.keys(TENANT_CHAT_TOOLS).concat("unsupported"),
+  filters: {
+    status: ["FAILED", "COMPLETED", "PROCESSING", "RETRY", "ANY"],
+    health: ["failed", "error", "stopped", "dlq", "any"],
+    range: ["past hour", "today", "past day", "past week", "custom", ""],
+    packageName: "string",
+    queueName: "string",
+    messageId: "string",
+    sourceQueue: "string",
+    targetQueue: "string",
+    email: "string",
+    exportType: ["excel", "payload_zip", ""]
+  },
+  output: ["summary", "list", "count", "searchable_select", "download", "action", "clarification"]
+};
+
+const buildAiToolListForPrompt = () =>
+  Object.entries(TENANT_CHAT_TOOLS).map(([name, tool]) => ({
+    name,
+    category: tool.category,
+    mode: tool.mode,
+    csrf: tool.csrf,
+    description: tool.description
+  }));
+
+const extractJsonObject = (value) => {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+};
+
+const normalizeAiIntentTool = (tool) => {
+  const cleanTool = String(tool || "").trim();
+  return TENANT_CHAT_TOOLS[cleanTool] || cleanTool === "unsupported" ? cleanTool : "unsupported";
+};
+
+const normalizeAiFilters = (filters) => {
+  const input = filters && typeof filters === "object" ? filters : {};
+
+  return {
+    status: firstNonEmpty(input.status, input.messageStatus, input.monitoringStatus, ""),
+    health: firstNonEmpty(input.health, input.queueHealth, ""),
+    range: firstNonEmpty(input.range, input.timeRange, ""),
+    packageName: firstNonEmpty(input.packageName, input.packageId, input.package, ""),
+    queueName: firstNonEmpty(input.queueName, input.queue, ""),
+    messageId: firstNonEmpty(input.messageId, input.jmsMessageId, input.mplId, ""),
+    sourceQueue: firstNonEmpty(input.sourceQueue, input.fromQueue, ""),
+    targetQueue: firstNonEmpty(input.targetQueue, input.toQueue, ""),
+    email: firstNonEmpty(input.email, input.to, input.recipient, ""),
+    exportType: firstNonEmpty(input.exportType, input.downloadType, "")
+  };
+};
+
+const validateAiIntent = (candidate, originalPrompt) => {
+  if (!candidate || typeof candidate !== "object") {
+    return null;
+  }
+
+  const tool = normalizeAiIntentTool(candidate.tool);
+  const output = CHATBOT_INTENT_SCHEMA.output.includes(candidate.output) ? candidate.output : "";
+  const confidence = Number(candidate.confidence);
+
+  return {
+    tool,
+    confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.6,
+    reason: firstNonEmpty(candidate.reason, candidate.intent, "ai-intent"),
+    prompt: normalizePrompt(originalPrompt),
+    filters: normalizeAiFilters(candidate.filters),
+    output,
+    needsClarification: Boolean(candidate.needsClarification),
+    clarification: firstNonEmpty(candidate.clarification, candidate.question, "")
+  };
+};
+
+const getDynamicExamplesForAi = async () => {
+  // Return static examples - dynamic fetching can be added later
+  // For now, use reliable examples that work with the rule-based fallback
+  return {
+    examples: [
+      {
+        prompt: "show artifacts inside a package",
+        result: {
+          tool: "list_artifacts",
+          filters: { packageName: "packages" },
+          output: "searchable_select",
+          confidence: 0.95
+        }
+      },
+      {
+        prompt: "List out all the JMS Queues which has failed",
+        result: {
+          tool: "list_jms_queues",
+          filters: { health: "failed" },
+          output: "list",
+          confidence: 0.95
+        }
+      },
+      {
+        prompt: "show failed messages today",
+        result: {
+          tool: "get_monitoring_logs",
+          filters: { status: "FAILED", range: "today" },
+          output: "list",
+          confidence: 0.95
+        }
+      }
+    ]
+  };
+};
+
+const analyzePromptWithAi = async ({ prompt }) => {
+  if (!OPENAI_API_KEY) {
+    return null;
+  }
+
+  const cleanPrompt = normalizePrompt(prompt);
+  if (!cleanPrompt) {
+    return null;
+  }
+
+  try {
+    // First, try to classify with rule-based system for task queries
+    const fallbackIntent = classifyChatbotIntent(prompt);
+    
+    // If rule-based system found a valid tool (not unsupported), use it
+    if (fallbackIntent && fallbackIntent.tool !== "unsupported" && fallbackIntent.confidence > 0.6) {
+      return fallbackIntent;
+    }
+
+    // For other queries, use natural language response
+    const response = await axios.post(
+      AI_INTENT_ENDPOINT,
+      {
+        model: AI_INTENT_MODEL,
+        temperature: 0.7,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a helpful SAP Integration Suite tenant assistant. Answer questions naturally and conversationally. " +
+              "If the user asks about monitoring, errors, JMS queues, packages, artifacts, or integration suite features, provide helpful guidance. " +
+              "You can help with: tenant errors, monitoring status, JMS queues, resources, packages, artifacts, payloads, exports, move/retry/delete operations. " +
+              "Be friendly and concise. Never share sensitive credentials or secrets."
+          },
+          {
+            role: "user",
+            content: cleanPrompt
+          }
+        ]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+          ...(AI_INTENT_ENDPOINT.includes("openrouter.ai")
+            ? {
+                "HTTP-Referer": AI_INTENT_APP_URL,
+                "X-Title": AI_INTENT_APP_NAME
+              }
+            : {})
+        },
+        timeout: 15000
+      }
+    );
+
+    const content = response.data?.choices?.[0]?.message?.content;
+    if (content) {
+      // Return the natural language response
+      return {
+        tool: "natural_response",
+        message: content,
+        confidence: 0.9
+      };
+    }
+    return null;
+  } catch (error) {
+    console.warn("AI analysis failed:", error.response?.data || error.message);
+    return null;
+  }
+};
+
+const mergeIntentFallback = (aiIntent, fallbackIntent) => {
+  // If AI has a natural response, use it directly
+  if (aiIntent && aiIntent.tool === "natural_response" && aiIntent.message) {
+    return aiIntent;
+  }
+
+  if (!aiIntent || aiIntent.tool === "unsupported" || aiIntent.confidence < 0.45) {
+    return { ...fallbackIntent, source: "rules" };
+  }
+
+  return {
+    ...fallbackIntent,
+    ...aiIntent,
+    prompt: fallbackIntent.prompt,
+    source: "ai"
+  };
+};
+
+const parseChatTimeRange = (prompt) => {
+  const normalized = prompt.toLowerCase();
+  const now = Date.now();
+  const numberMatch = normalized.match(/(?:last|past)\s+(\d+)\s*(minute|minutes|hour|hours|day|days|week|weeks|month|months)/);
+
+  if (numberMatch) {
+    const amount = Number(numberMatch[1]);
+    const unit = numberMatch[2];
+    const multipliers = {
+      minute: 60 * 1000,
+      minutes: 60 * 1000,
+      hour: 60 * 60 * 1000,
+      hours: 60 * 60 * 1000,
+      day: 24 * 60 * 60 * 1000,
+      days: 24 * 60 * 60 * 1000,
+      week: 7 * 24 * 60 * 60 * 1000,
+      weeks: 7 * 24 * 60 * 60 * 1000,
+      month: 30 * 24 * 60 * 60 * 1000,
+      months: 30 * 24 * 60 * 60 * 1000
+    };
+
+    return {
+      label: `past ${amount} ${unit}`,
+      fromMs: now - amount * multipliers[unit],
+      toMs: now
+    };
+  }
+
+  if (normalized.includes("past hour") || normalized.includes("last hour")) {
+    return { label: "past hour", fromMs: now - 60 * 60 * 1000, toMs: now };
+  }
+
+  if (normalized.includes("today")) {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return { label: "today", fromMs: start.getTime(), toMs: now };
+  }
+
+  if (normalized.includes("last day") || normalized.includes("past day")) {
+    return { label: "past day", fromMs: now - 24 * 60 * 60 * 1000, toMs: now };
+  }
+
+  if (normalized.includes("last week") || normalized.includes("past week")) {
+    return { label: "past week", fromMs: now - 7 * 24 * 60 * 60 * 1000, toMs: now };
+  }
+
+  return null;
+};
+
+const reportTimeMs = (report) => sapDateToMs(report.logStart);
+
+const filterReportsForPrompt = (reports, prompt) => {
+  const normalized = prompt.toLowerCase();
+  const range = parseChatTimeRange(prompt);
+  let filtered = reports;
+
+  if (range) {
+    filtered = filtered.filter((report) => {
+      const timeMs = reportTimeMs(report);
+      return timeMs >= range.fromMs && timeMs <= range.toMs;
+    });
+  }
+
+  if (normalized.includes("error") || normalized.includes("failed")) {
+    filtered = filtered.filter((report) =>
+      String(report.status || "").toLowerCase().includes("fail") ||
+      String(report.errorInfo || "").trim().replace("-", "")
+    );
+  } else if (normalized.includes("completed")) {
+    filtered = filtered.filter((report) => String(report.status || "").toUpperCase() === "COMPLETED");
+  } else if (normalized.includes("processing")) {
+    filtered = filtered.filter((report) => String(report.status || "").toUpperCase() === "PROCESSING");
+  } else if (normalized.includes("retry")) {
+    filtered = filtered.filter((report) => String(report.status || "").toUpperCase().includes("RETRY"));
+  }
+
+  return { filtered, range };
+};
+
+const toChatbotTextValue = (value, fallback = "") => {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => toChatbotTextValue(entry)).filter(Boolean).join(", ") || fallback;
+  }
+
+  if (value.__deferred) {
+    return fallback;
+  }
+
+  return toChatbotTextValue(value.Name || value.Id || value.Value || value.value || value.Message || value.message, fallback);
+};
+
+const firstTextValue = (...values) => {
+  for (const value of values) {
+    const text = toChatbotTextValue(value).trim();
+    if (text) {
+      return text;
+    }
+  }
+
+  return "";
+};
+
+const mapTenantMonitoringLog = (message, index) => ({
+  id: firstTextValue(message.MessageGuid, message.Id, message.MplId, `tenant-message-${index}`),
+  mplId: firstTextValue(message.MessageGuid, message.MplId, message.Id),
+  iflowName: firstTextValue(message.IntegrationFlowName, message.IntegrationArtifact?.Name),
+  status: firstTextValue(message.Status, message.CustomStatus),
+  logStart: formatSapTimestamp(message.LogStart),
+  logStartMs: sapDateToMs(message.LogStart),
+  logEnd: formatSapTimestamp(message.LogEnd),
+  errorInfo: firstTextValue(
+    message.ErrorInformation,
+    message.ErrorMessage,
+    message.ApplicationMessage,
+    message.CustomStatus,
+    "-"
+  ),
+  correlationId: firstTextValue(message.CorrelationId),
+  payloadFileName: ""
+});
+
+const toODataDateTime = (timeMs) => {
+  const date = new Date(timeMs);
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+};
+
+const fetchTenantMonitoringLogs = async ({ baseUrl, token, prompt }) => {
+  const normalized = prompt.toLowerCase();
+  const range = parseChatTimeRange(prompt);
+  const candidates = buildBaseUrlCandidates(baseUrl);
+  let lastError;
+
+  for (const candidate of candidates) {
+    try {
+      const params = new URLSearchParams();
+      const filters = [];
+
+      if (normalized.includes("error") || normalized.includes("failed")) {
+        filters.push("Status eq 'FAILED'");
+      } else if (normalized.includes("completed")) {
+        filters.push("Status eq 'COMPLETED'");
+      } else if (normalized.includes("processing")) {
+        filters.push("Status eq 'PROCESSING'");
+      } else if (normalized.includes("retry")) {
+        filters.push("Status eq 'RETRY'");
+      }
+
+      if (range) {
+        filters.push(`LogStart ge datetime'${toODataDateTime(range.fromMs)}'`);
+        filters.push(`LogStart le datetime'${toODataDateTime(range.toMs)}'`);
+      }
+
+      if (filters.length > 0) {
+        params.append("$filter", filters.join(" and "));
+      }
+
+      params.append("$orderby", "LogStart desc");
+      params.append("$top", "1000");
+      params.append("$inlinecount", "allpages");
+
+      const response = await axios.get(`${candidate}/api/v1/MessageProcessingLogs?${params.toString()}`, {
+        headers: tenantHeaders(token),
+        timeout: 30000
+      });
+
+      let rows = unwrapODataResults(response.data).map(mapTenantMonitoringLog);
+      const totalCount = Number(response.data?.d?.__count || rows.length);
+
+      return { reports: rows, range, source: "tenant", totalCount };
+    } catch (error) {
+      lastError = error;
+      if (error.response?.status === 404) {
+        continue;
+      }
+    }
+  }
+
+  throw lastError || new Error("Unable to fetch tenant monitoring logs.");
+};
+
+const summarizeReports = (reports) => {
+  const summary = reports.reduce((acc, report) => {
+    const key = report.status || "UNKNOWN";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  return Object.entries(summary)
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(", ") || "No reports";
+};
+
+const toChatItems = (rows, type, limit = 10) =>
+  rows.slice(0, limit).map((row) => ({ type, ...row }));
+
+const toSearchableChatItems = (rows, type, limit = 500) =>
+  rows.slice(0, limit).map((row) => ({ type, ...row }));
+
+const extractQuotedValue = (prompt, key) => {
+  const regex = new RegExp(`${key}\\s+["']([^"']+)["']`, "i");
+  return prompt.match(regex)?.[1] || "";
+};
+
+const extractAfterKeyword = (prompt, key) => {
+  const regex = new RegExp(`${key}\\s+([^,]+)`, "i");
+  return prompt.match(regex)?.[1]?.trim() || "";
+};
+
+const normalizePackageLookup = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const cleanPackageCandidate = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/\s+(package|artifacts?|iflow|i-flow)$/i, "")
+    .trim();
+
+const extractPackageNameFromArtifactPrompt = (prompt) => {
+  const text = String(prompt || "").trim();
+  const patterns = [
+    /\binside\s+["']?(.+?)["']?\s+package\b/i,
+    /\bin\s+["']?(.+?)["']?\s+package\b/i,
+    /\bfrom\s+["']?(.+?)["']?\s+package\b/i,
+    /\bfor\s+["']?(.+?)["']?\s+package\b/i,
+    /\bpackage\s+["']?(.+?)["']?(?:\s+(?:package|artifacts?|iflow|i-flow))?$/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const candidate = cleanPackageCandidate(match[1]);
+      if (candidate && !/^(all|the|this|that)$/i.test(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return cleanPackageCandidate(extractQuotedValue(text, "package") || extractAfterKeyword(text, "package"));
+};
+
+const resolvePackageForPrompt = (prompt, packages = []) => {
+  const requestedPackage = extractPackageNameFromArtifactPrompt(prompt);
+
+  if (!requestedPackage || /^all$/i.test(requestedPackage)) {
+    return { packageId: "All", requestedPackage: requestedPackage || "All", matches: [] };
+  }
+
+  const normalizedRequest = normalizePackageLookup(requestedPackage);
+  const candidates = packages
+    .map((pkg) => ({
+      pkg,
+      id: String(pkg.Id || "").trim(),
+      name: String(pkg.Name || "").trim()
+    }))
+    .filter((entry) => entry.id || entry.name);
+
+  const exactMatch = candidates.find(
+    (entry) =>
+      normalizePackageLookup(entry.id) === normalizedRequest ||
+      normalizePackageLookup(entry.name) === normalizedRequest
+  );
+
+  if (exactMatch) {
+    return {
+      packageId: exactMatch.id || exactMatch.name,
+      requestedPackage,
+      matches: [exactMatch.pkg]
+    };
+  }
+
+  const fuzzyMatches = candidates.filter((entry) => {
+    const normalizedId = normalizePackageLookup(entry.id);
+    const normalizedName = normalizePackageLookup(entry.name);
+    return normalizedId.includes(normalizedRequest) || normalizedName.includes(normalizedRequest);
+  });
+
+  if (fuzzyMatches.length === 1) {
+    return {
+      packageId: fuzzyMatches[0].id || fuzzyMatches[0].name,
+      requestedPackage,
+      matches: [fuzzyMatches[0].pkg]
+    };
+  }
+
+  return {
+    packageId: "",
+    requestedPackage,
+    matches: fuzzyMatches.map((entry) => entry.pkg)
+  };
+};
+
+const extractMessageId = (prompt) => {
+  const match = prompt.match(/ID:[A-Za-z0-9.:_-]+/i);
+  return match ? match[0] : "";
+};
+
+const extractQueueOperationParts = (prompt) => {
+  const text = String(prompt || "").trim();
+  const moveMatch = text.match(/\bmove\b\s+(ID:[^\s,]+)\s+\bfrom\b\s+(.+?)\s+\bto\b\s+([^\s,]+)/i);
+  const retryOrDeleteMatch = text.match(/\b(?:retry|delete|deleted)\b\s+(ID:[^\s,]+)\s+(?:\bfrom\b|\bin\b|\bqueue\b)?\s*([^\s,]+)/i);
+
+  if (moveMatch) {
+    return {
+      messageId: moveMatch[1],
+      sourceQueue: moveMatch[2].trim(),
+      targetQueue: moveMatch[3].trim()
+    };
+  }
+
+  if (retryOrDeleteMatch) {
+    return {
+      messageId: retryOrDeleteMatch[1],
+      sourceQueue: retryOrDeleteMatch[2].trim(),
+      targetQueue: ""
+    };
+  }
+
+  return {
+    messageId: extractMessageId(text),
+    sourceQueue: extractQuotedValue(text, "from") || extractQuotedValue(text, "queue"),
+    targetQueue: extractQuotedValue(text, "to") || extractQuotedValue(text, "target")
+  };
+};
+
+const extractEmailAddress = (prompt) => prompt.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || "";
+
+const buildChatbotUnsupportedResponse = () => ({
+  notApplicable: true,
+  message: "Not applicable question. Ask about monitoring status, errors, reports, payloads, packages, artifacts, JMS queues, move, retry, delete, export, or email.",
+  items: [],
+  actions: []
+});
+
+const getChatbotReports = () => {
+  let conn;
+  try {
+    conn = getConnection();
+    return getReportRows(conn);
+  } finally {
+    if (conn) {
+      conn.disconnect();
+    }
+  }
+};
+
+const getMonitoringOverviewData = async ({ prompt, token, baseUrl }) => {
+  if (token && baseUrl) {
+    try {
+      const liveResult = await fetchTenantMonitoringLogs({ baseUrl, token, prompt });
+      return {
+        reports: liveResult.reports,
+        range: liveResult.range,
+        source: "tenant",
+        totalCount: Number.isFinite(liveResult.totalCount) ? liveResult.totalCount : liveResult.reports.length
+      };
+    } catch (error) {
+      console.warn("getMonitoringOverviewData tenant fallback:", error.response?.data || error.message);
+    }
+  }
+
+  const savedResult = filterReportsForPrompt(getChatbotReports(), prompt);
+  return {
+    reports: savedResult.filtered,
+    range: savedResult.range,
+    source: "saved report",
+    totalCount: savedResult.filtered.length
+  };
+};
+
+const buildOperationalPromptFromIntent = (intent) => {
+  const filters = intent.filters || {};
+  const parts = [];
+
+  if (intent.output === "list" || intent.output === "searchable_select") {
+    parts.push("show");
+  } else if (intent.output === "count") {
+    parts.push("count");
+  }
+
+  if (filters.status && filters.status !== "ANY") {
+    parts.push(filters.status.toLowerCase());
+  }
+
+  if (filters.health && filters.health !== "any") {
+    parts.push(filters.health);
+  }
+
+  if (filters.range) {
+    parts.push(filters.range);
+  }
+
+  if (intent.tool === "list_artifacts") {
+    parts.push("artifacts");
+    if (filters.packageName) {
+      parts.push(`inside ${filters.packageName} package`);
+    }
+  } else if (intent.tool === "list_packages") {
+    parts.push("packages");
+  } else if (intent.tool === "list_jms_queues") {
+    parts.push("JMS queues");
+  } else if (intent.tool === "list_jms_messages") {
+    parts.push("JMS messages");
+    if (filters.queueName) {
+      parts.push(`in queue ${filters.queueName}`);
+    }
+  } else if (intent.tool === "get_jms_resources") {
+    parts.push("JMS resources");
+  } else if (intent.tool === "move_jms_message") {
+    return `move ${filters.messageId} from ${filters.sourceQueue} to ${filters.targetQueue}`;
+  } else if (intent.tool === "retry_jms_message") {
+    return `retry ${filters.messageId} from ${filters.sourceQueue || filters.queueName}`;
+  } else if (intent.tool === "delete_jms_message") {
+    return `delete ${filters.messageId} from ${filters.sourceQueue || filters.queueName}`;
+  } else {
+    parts.push("monitoring messages");
+  }
+
+  if (filters.email) {
+    parts.push(`to ${filters.email}`);
+  }
+
+  const builtPrompt = parts.filter(Boolean).join(" ").trim();
+  return builtPrompt || intent.prompt;
+};
+
+const handleMonitoringOverviewPrompt = async ({ prompt, token, baseUrl }) => {
+  const { reports, range, source, totalCount } = await getMonitoringOverviewData({ prompt, token, baseUrl });
+  const rangeText = range ? ` for the ${range.label}` : "";
+  const sourceText = source === "tenant" ? "connected tenant" : source;
+  const visibleColumns = [
+    "MPL ID",
+    "iFlow name",
+    "status",
+    "log start",
+    "log end",
+    "error information",
+    "correlation ID",
+    "payload/attachment details"
+  ];
+  const latestItems = toChatItems(reports, "report", 5);
+
+  return {
+    message:
+      `Monitoring overview is loaded from the ${sourceText}${rangeText}. ` +
+      `I found ${totalCount} message(s). Status summary: ${summarizeReports(reports)}.\n\n` +
+      `Data available: ${visibleColumns.join(", ")}. You can ask for counts, lists, failed/completed/processing messages, specific time ranges, payload export, Excel export, or email report.`,
+    items: latestItems,
+    actions: [
+      { label: "Download Excel", url: "/export-reports-excel", method: "GET" },
+      { label: "Download Payload ZIP", url: "/download-reports-zip", method: "GET" }
+    ]
+  };
+};
+
+const handleMonitoringChatPrompt = async ({ prompt, token, baseUrl, intent }) => {
+  const operationalPrompt = intent ? buildOperationalPromptFromIntent(intent) : prompt;
+  const normalized = operationalPrompt.toLowerCase();
+  const wantsList = /(show|list|view|display|give|get)\b/.test(normalized);
+  const wantsPayload = normalized.includes("payload");
+  const wantsExcel = normalized.includes("excel");
+  const wantsZip = normalized.includes("zip") || normalized.includes("all payload");
+  const wantsEmail = normalized.includes("email") || normalized.includes("send");
+  const canUseLiveTenant = token && baseUrl && !wantsPayload && !wantsExcel && !wantsZip && !wantsEmail;
+  let filtered = [];
+  let range = parseChatTimeRange(operationalPrompt);
+  let source = "saved report";
+  let totalCount = null;
+
+  if (canUseLiveTenant) {
+    try {
+      const liveResult = await fetchTenantMonitoringLogs({ baseUrl, token, prompt: operationalPrompt });
+      filtered = liveResult.reports;
+      range = liveResult.range || range;
+      source = "tenant";
+      totalCount = Number.isFinite(liveResult.totalCount) ? liveResult.totalCount : filtered.length;
+    } catch {
+      const savedResult = filterReportsForPrompt(getChatbotReports(), operationalPrompt);
+      filtered = savedResult.filtered;
+      range = savedResult.range || range;
+      source = "saved report fallback";
+      totalCount = filtered.length;
+    }
+  } else {
+    const savedResult = filterReportsForPrompt(getChatbotReports(), operationalPrompt);
+    filtered = savedResult.filtered;
+    range = savedResult.range || range;
+    totalCount = filtered.length;
+  }
+
+  const rangeText = range ? ` in the ${range.label}` : "";
+  const sourceText = source === "tenant" ? " from the tenant" : ` from the ${source}`;
+  const countText = Number.isFinite(totalCount) ? totalCount : filtered.length;
+
+  if (wantsEmail) {
+    const to = intent?.filters?.email || extractEmailAddress(operationalPrompt);
+    return {
+      message: to
+        ? `I can send the latest monitoring Excel report to ${to}. Use the email action to send it.`
+        : "I can send the latest monitoring Excel report, but I need a recipient email address.",
+      items: [],
+      actions: to ? [{ label: "Send Excel Email", endpoint: "/send-excel-email", method: "POST", body: { to } }] : []
+    };
+  }
+
+  if (wantsExcel) {
+    return {
+      message: "The monitoring Excel export is available.",
+      items: [],
+      actions: [{ label: "Download Excel", url: "/export-reports-excel", method: "GET" }]
+    };
+  }
+
+  if (wantsZip || wantsPayload) {
+    return {
+      message: wantsPayload && filtered.length
+        ? `Found ${filtered.length} matching monitoring rows${rangeText}. You can download all payloads or open individual payloads from the overview.`
+        : "The payload zip download is available for the latest monitoring report.",
+      items: toChatItems(filtered, "report", 5),
+      actions: [{ label: "Download Payload ZIP", url: "/download-reports-zip", method: "GET" }]
+    };
+  }
+
+  if (wantsList) {
+    return {
+      message: `Found ${countText} matching monitoring message(s)${rangeText}${sourceText}.`,
+      items: toChatItems(filtered, "report", 10),
+      actions: []
+    };
+  }
+
+  return {
+    message: `Found ${countText} matching monitoring message(s)${rangeText}${sourceText}. Do you want to see them? Status summary: ${summarizeReports(filtered)}.`,
+    items: [],
+    pendingItems: toChatItems(filtered, "report", 10),
+    actions: []
+  };
+};
+
+const handleJmsChatPrompt = async ({ prompt, token, baseUrl, intent }) => {
+  if (!token || !baseUrl) {
+    return {
+      message: "Connect a tenant first, then I can work with JMS queues.",
+      items: [],
+      actions: []
+    };
+  }
+
+  const operationalPrompt = intent ? buildOperationalPromptFromIntent(intent) : prompt;
+  const normalized = operationalPrompt.toLowerCase();
+  const extractedParts = extractQueueOperationParts(operationalPrompt);
+  const messageId = firstNonEmpty(intent?.filters?.messageId, extractedParts.messageId);
+  const sourceQueue = firstNonEmpty(intent?.filters?.sourceQueue, intent?.filters?.queueName, extractedParts.sourceQueue);
+  const targetQueue = firstNonEmpty(intent?.filters?.targetQueue, extractedParts.targetQueue);
+  const wantsProblemQueues =
+    hasAnyTerm(String(intent?.filters?.health || "").toLowerCase(), ["failed", "failure", "error", "stopped", "dlq"]) ||
+    hasAnyTerm(normalized, ["failed queue", "failed queues", "failure queue", "failure queues", "error queue", "error queues", "stopped queue", "stopped queues", "dlq", "dead letter"]) ||
+    (hasAnyTerm(normalized, ["failed", "failure", "error", "stopped"]) && hasAnyTerm(normalized, ["queue", "queues", "jms"]));
+
+  if (normalized.includes("resource") || normalized.includes("broker") || normalized.includes("usage")) {
+    try {
+      const resource = await getJmsBrokerResource(baseUrl, token, "Broker1");
+      return {
+        message: `JMS resources loaded. Queues: ${resource.queueNumber}/${resource.maxQueueNumber}, capacity: ${formatCapacityMb(resource.capacity)} of ${formatCapacityMb(resource.maxCapacity)}.`,
+        items: [{ type: "resource", ...resource }],
+        actions: []
+      };
+    } catch (error) {
+      const queues = await getJmsQueueRecords(baseUrl, token);
+      return {
+        message: `I could not fetch Broker1 resource details, but I loaded ${queues.length} JMS queue(s) from the tenant.`,
+        items: toChatItems(queues, "jms-queue", 20),
+        actions: []
+      };
+    }
+  }
+
+  if (normalized.includes("move")) {
+    if (!messageId || !sourceQueue || !targetQueue) {
+      return {
+        message: "To move a JMS message, include message ID, source queue, and target queue. Example: move ID:... from JMS_Queue_100_DLQ to JMS_Queue_100.",
+        items: [],
+        actions: []
+      };
+    }
+
+    await moveJmsMessage(baseUrl, token, sourceQueue, targetQueue, messageId, true);
+    return {
+      message: `Moved ${messageId} from ${sourceQueue} to ${targetQueue}.`,
+      items: [],
+      actions: []
+    };
+  }
+
+  if (normalized.includes("retry")) {
+    if (!messageId || !sourceQueue) {
+      return {
+        message: "To retry a JMS message, include message ID and queue. Example: retry ID:... from JMS_Queue_100_DLQ.",
+        items: [],
+        actions: []
+      };
+    }
+
+    await retryJmsMessage(baseUrl, token, sourceQueue, messageId, true);
+    return {
+      message: `Retry triggered for ${messageId} in ${sourceQueue}.`,
+      items: [],
+      actions: []
+    };
+  }
+
+  if (normalized.includes("delete") || normalized.includes("deleted")) {
+    if (!messageId || !sourceQueue) {
+      return {
+        message: "To delete a JMS message, include message ID and queue. Example: delete ID:... from JMS_Queue_100_DLQ.",
+        items: [],
+        actions: []
+      };
+    }
+
+    await deleteJmsMessage(baseUrl, token, sourceQueue, messageId, true);
+    return {
+      message: `Deleted ${messageId} from ${sourceQueue}.`,
+      items: [],
+      actions: []
+    };
+  }
+
+  const queues = await getJmsQueueRecords(baseUrl, token);
+
+  if (wantsProblemQueues) {
+    const problemQueues = filterProblemJmsQueues(queues);
+
+    return {
+      message: problemQueues.length
+        ? `Found ${problemQueues.length} JMS queue(s) that look failed, stopped, error-related, or DLQ-like.`
+        : "I did not find any JMS queues with failed/error/stopped/DLQ indicators in the queue summary. To inspect failed messages, ask for messages in a specific queue.",
+      items: toChatItems(problemQueues, "jms-queue", 30),
+      actions: []
+    };
+  }
+
+  if (sourceQueue && !normalized.includes("queues")) {
+    const messages = await enrichQueueMessages(baseUrl, token, await getJmsMessagesForQueue(baseUrl, token, sourceQueue, sourceQueue));
+    return {
+      message: `Found ${messages.length} message(s) in ${sourceQueue}.`,
+      items: toChatItems(messages, "jms-message", 10),
+      actions: []
+    };
+  }
+
+  return {
+    message: `Found ${queues.length} JMS queue(s).`,
+    items: toChatItems(queues, "jms-queue", 20),
+    actions: []
+  };
+};
+
+const handlePackageChatPrompt = async ({ prompt, token, baseUrl, packages = [], intent }) => {
+  const operationalPrompt = intent ? buildOperationalPromptFromIntent(intent) : prompt;
+  const normalized = operationalPrompt.toLowerCase();
+
+  if (normalized.includes("artifact")) {
+    if (!token || !baseUrl) {
+      return { message: "Connect a tenant first, then I can fetch artifacts.", items: [], actions: [] };
+    }
+
+    const { apiBaseUrl, packages: fetchedPackages } = await fetchPackages(baseUrl, token);
+
+    const packagePrompt = intent?.filters?.packageName
+      ? `show artifacts inside ${intent.filters.packageName} package`
+      : operationalPrompt;
+    const { packageId, requestedPackage, matches } = resolvePackageForPrompt(packagePrompt, fetchedPackages);
+
+    if (!packageId) {
+      return {
+        message: matches.length
+          ? `I found ${matches.length} package(s) matching "${requestedPackage}". Select the exact package first, then I will fetch only that package's artifacts.`
+          : `I could not find a package matching "${requestedPackage}" in the connected tenant.`,
+        items: toSearchableChatItems(matches, "package"),
+        actions: []
+      };
+    }
+
+    const artifacts = packageId === "All"
+      ? (await fetchArtifactsForPackagesInBatches(apiBaseUrl, token, fetchedPackages)).results.flatMap((entry) => entry.artifacts)
+      : await fetchArtifactsForPackage(apiBaseUrl, token, packageId);
+
+    return {
+      message: `Found ${artifacts.length} artifact(s) for ${packageId}.`,
+      items: toSearchableChatItems(artifacts, "artifact"),
+      actions: []
+    };
+  }
+
+  if (token && baseUrl) {
+    const { packages: fetchedPackages } = await fetchPackages(baseUrl, token);
+    return {
+      message: `Found ${fetchedPackages.length} package(s) from the connected tenant.`,
+      items: toSearchableChatItems(fetchedPackages, "package"),
+      actions: []
+    };
+  }
+
+  return {
+    message: `Found ${packages.length} package(s) from the current session cache.`,
+    items: toSearchableChatItems(packages, "package"),
+    actions: []
+  };
+};
+
+const executeTenantChatTool = async ({ intent, tenantContext }) => {
+  const prompt = intent.prompt;
+  const { token, baseUrl, packages } = tenantContext;
+
+  switch (intent.tool) {
+    case "get_monitoring_overview":
+      return handleMonitoringOverviewPrompt({ prompt, token, baseUrl });
+    case "get_monitoring_logs":
+    case "export_monitoring_excel":
+    case "download_payload_zip":
+    case "send_monitoring_email":
+      return handleMonitoringChatPrompt({ prompt, token, baseUrl, intent });
+    case "list_packages":
+    case "list_artifacts":
+      return handlePackageChatPrompt({ prompt, token, baseUrl, packages, intent });
+    case "list_jms_queues":
+    case "list_jms_messages":
+    case "get_jms_resources":
+    case "move_jms_message":
+    case "retry_jms_message":
+    case "delete_jms_message":
+      return handleJmsChatPrompt({ prompt, token, baseUrl, intent });
+    case "trigger_cpi_flow":
+      return {
+        message: "I can trigger CPI when package, artifact or All, status, and time range are provided from the Monitoring Overview. Use the Monitoring Overview controls for the safest trigger flow.",
+        items: [],
+        actions: []
+      };
+    default:
+      return buildChatbotUnsupportedResponse();
+  }
+};
+
+const attachChatbotTrace = (response, intent, tenantContext) => ({
+  ...response,
+  intent: {
+    tool: intent.tool,
+    confidence: intent.confidence,
+    reason: intent.reason,
+    source: intent.source || "rules",
+    filters: intent.filters || {},
+    output: intent.output || "",
+    category: TENANT_CHAT_TOOLS[intent.tool]?.category || "unsupported",
+    requiresCsrf: Boolean(TENANT_CHAT_TOOLS[intent.tool]?.csrf),
+    requiresTenantConnection: TENANT_CHAT_TOOLS[intent.tool]?.auth === "tenant-bearer-token"
+  },
+  tenant: {
+    connected: tenantContext.hasTenantConnection,
+    tenantId: tenantContext.tenantId
+  }
+});
+
+const handleChatbotPrompt = async ({ prompt, token, baseUrl, packages }) => {
+  const tenantContext = createChatbotTenantContext({ token, baseUrl, packages });
+  const fallbackIntent = classifyChatbotIntent(prompt);
+  const aiIntent = await analyzePromptWithAi({ prompt });
+  const intent = mergeIntentFallback(aiIntent, fallbackIntent);
+
+  // If AI has a natural response, return it directly
+  if (intent.tool === "natural_response" && intent.message) {
+    return attachChatbotTrace(
+      {
+        message: intent.message,
+        items: [],
+        actions: []
+      },
+      intent,
+      tenantContext
+    );
+  }
+
+  if (intent.tool === "unsupported") {
+    return attachChatbotTrace(buildChatbotUnsupportedResponse(), intent, tenantContext);
+  }
+
+  if (intent.needsClarification && intent.clarification) {
+    return attachChatbotTrace(
+      {
+        message: intent.clarification,
+        items: [],
+        actions: []
+      },
+      intent,
+      tenantContext
+    );
+  }
+
+  const tool = TENANT_CHAT_TOOLS[intent.tool];
+  if (tool?.auth === "tenant-bearer-token" && !tenantContext.hasTenantConnection) {
+    return attachChatbotTrace(
+      {
+        message: "Connect a tenant first, then I can fetch that data with the correct tenant credentials.",
+        items: [],
+        actions: []
+      },
+      intent,
+      tenantContext
+    );
+  }
+
+  const response = await executeTenantChatTool({ intent, tenantContext });
+  return attachChatbotTrace(response, intent, tenantContext);
+};
+
 app.post("/jms-queues", async (req, res) => {
   let { token, baseUrl } = req.body || {};
   baseUrl = cleanUrl(baseUrl);
@@ -1949,6 +3294,47 @@ app.post("/jms-queues", async (req, res) => {
     return res.status(500).json({
       message: "Failed to fetch JMS queues.",
       detail: error.response?.data || error.message
+    });
+  }
+});
+
+app.get("/chatbot/capabilities", (req, res) => {
+  const tools = Object.entries(TENANT_CHAT_TOOLS).map(([name, config]) => ({
+    name,
+    ...config
+  }));
+
+  return res.json({
+    tools,
+    total: tools.length,
+    aiIntent: {
+      enabled: Boolean(OPENAI_API_KEY),
+      model: AI_INTENT_MODEL
+    },
+    note: "These are backend-controlled tenant tools. Secrets and tokens are never exposed by this endpoint."
+  });
+});
+
+app.post("/chatbot/query", async (req, res) => {
+  let { prompt, token, baseUrl, packages } = req.body || {};
+  baseUrl = cleanUrl(baseUrl);
+
+  try {
+    const response = await handleChatbotPrompt({
+      prompt,
+      token,
+      baseUrl,
+      packages: Array.isArray(packages) ? packages : []
+    });
+
+    return res.json(response);
+  } catch (error) {
+    const detail = error.response?.data || error.message;
+    console.error("chatbot/query error:", detail);
+    return res.json({
+      message: `I could not complete that tenant action. ${typeof detail === "string" ? detail : JSON.stringify(detail)}`,
+      items: [],
+      actions: []
     });
   }
 });

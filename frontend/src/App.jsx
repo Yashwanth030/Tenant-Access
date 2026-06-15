@@ -7,10 +7,12 @@ import Unauthorized from "./pages/Unauthorized";
 import StatusOverview from "./pages/StatusOverview";
 import JmsQueues from "./pages/JmsQueues";
 import ProtectedRoute from "./components/ProtectedRoute";
+import AppChatbot from "./components/AppChatbot";
 
 function App() {
     return (
         <BrowserRouter>
+            <AppChatbot />
             <Routes>
                 <Route path="/" element={<Home />} />
                 <Route path="/login" element={<Login />} />
