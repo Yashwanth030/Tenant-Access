@@ -73,6 +73,22 @@ const toCpiDateTime = (value) => {
   return `${year}-${month}-${day}T${hours}:${minutes}:00`;
 };
 
+const toCpiDateValue = (value) => {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
 const getRangeForTime = (timeRange, customFromDate, customToDate) => {
   const now = new Date();
 
@@ -376,8 +392,8 @@ const StatusOverview = () => {
         BASE_URL: resolvedBaseUrl || baseUrl || "",
         IFLOW_NAME: selectedArtifact === "All" ? "" : selectedArtifact,
         STATUS: status === "All" ? "" : status,
-        FROM_DATE: range.fromDate,
-        TO_DATE: range.toDate
+        FROM_DATE: toCpiDateValue(range.fromDate),
+        TO_DATE: toCpiDateValue(range.toDate)
       };
 
       const response = await fetch(`${API_BASE_URL}/trigger-cpi`, {

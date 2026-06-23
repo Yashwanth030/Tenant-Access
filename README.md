@@ -1,224 +1,235 @@
 # Tenant Access Application
 
-Tenant Access Application is a full-stack SAP CPI monitoring tool with a React frontend and an Express backend. It lets a user sign in, connect to an SAP BTP / SAP CPI tenant with client credentials, browse integration packages and artifacts, trigger an iFlow, and review monitoring data stored in SAP HANA.
+Tenant Access is a full-stack SAP Integration Suite / CPI utility with two main UI modules:
 
-## Business Flow
+- `Message Monitoring Overview`
+- `JMS Queues`
+- `Tenant Assistant` chatbot overlay
 
-1. User signs in to the web app.
-2. User enters tenant client credentials and CPI URLs.
-3. Backend validates the tenant connection and fetches CPI packages.
-4. User selects package, artifact, status, and time range.
-5. Backend triggers the CPI flow.
-6. CPI writes monitoring data into HANA.
-7. Frontend loads monitoring records from HANA through the backend.
-8. User can refresh data, inspect payloads, download payload files, export Excel, or send the Excel by email.
+The app has a React frontend and an Express backend. A user connects to a tenant with OAuth client credentials, then uses the app to:
 
-## Current Stack
+- browse packages and artifacts
+- trigger CPI flows
+- view monitoring data stored in SAP HANA
+- inspect payloads and export reports
+- manage JMS queue messages with `Move`, `Retry`, and `Delete`
+- ask the chatbot for the same operational data and actions available manually in the UI
 
-### Frontend
-- React 19
-- React Router 7
-- Vite
-- Material UI 7
-- MUI Icons
-- Browser `fetch` API and `localStorage`
+## AI And MCP Server Update
 
-### Backend
-- Node.js
-- Express 5
-- Axios
-- Nodemailer
-- ExcelJS
-- SAP HANA client
-- PowerShell `Compress-Archive` for zip generation
+The chatbot now uses an in-process MCP-style tool calling flow powered by OpenRouter. MCP here means the backend exposes a registry of safe application tools to the AI model, the model chooses the right tool for the user's prompt, and the backend executes that tool using existing server functions.
 
-### External Systems
-- SAP BTP / SAP CPI tenant APIs
-- SAP OAuth token endpoint
-- SAP HANA database
-- SMTP server for Excel mail delivery
+There is no separate MCP server process. The MCP layer lives inside the existing Express backend process in `backend/server.js`.
 
-## Repository Structure
+### What Changed
+
+New files were added under `backend/mcp`:
+
+- `toolRegistry.js`: defines 15 AI-callable tools with names, descriptions, and JSON input schemas
+- `toolHandlers.js`: maps each tool to existing backend functions in `server.js`
+- `mcpClient.js`: sends the user prompt and tool schemas to OpenRouter and receives the selected `tool_call`
+- `summarizer.js`: makes a second OpenRouter call to summarize raw tool results into a short user-facing sentence
+
+`backend/server.js` was updated so `/chatbot/query` now tries the MCP flow first. If OpenRouter is not configured or the MCP call fails, the old rule-based chatbot flow still runs as fallback.
+
+### How The AI Flow Works
 
 ```text
-tenant-access/
-+-- backend/
-|   +-- package.json
-|   +-- package-lock.json
-|   `-- server.js
-+-- frontend/
-|   +-- package.json
-|   +-- package-lock.json
-|   +-- vite.config.js
-|   +-- index.html
-|   +-- public/
-|   `-- src/
-+-- requirements.txt
-`-- README.md
+User prompt in AppChatbot.jsx
+        |
+        v
+POST /chatbot/query
+        |
+        v
+server.js handleChatbotPrompt()
+        |
+        v
+mcpClient.js sends prompt + all tool schemas to OpenRouter
+        |
+        v
+OpenRouter chooses one tool and fills parameters
+        |
+        v
+toolHandlers.js executes the matching backend function
+        |
+        v
+summarizer.js converts raw result into a short answer
+        |
+        v
+Frontend receives { message, items, actions, pendingItems }
 ```
 
-## Frontend Overview
+Important: OpenRouter only chooses the tool and parameters. Real SAP, HANA, SMTP, and CPI actions still happen only inside this backend. Export, ZIP, and email requests must include package/iFlow, status, and time range first; the chatbot triggers CPI with those filters before generated files should be downloaded or sent. CPI trigger dates are sent as date-only values like `2026-02-01`, so the iFlow can append `T00:00:00` for `FROM_DATE` and `T23:59:59` for `TO_DATE`.
 
-### Main Pages
-- `frontend/src/pages/Home.jsx`
-  Landing page with branding and login entry point.
-- `frontend/src/pages/Login.jsx`
-  Wrapper page for the login modal.
-- `frontend/src/pages/TenantAccess.jsx`
-  Tenant connection form for `clientId`, `clientSecret`, `tokenUrl`, and `baseUrl`.
-- `frontend/src/pages/StatusOverview.jsx`
-  Main monitoring page for package selection, artifact selection, CPI triggering, report refresh, payload download, and Excel export.
-- `frontend/src/pages/Unauthorized.jsx`
-  Redirect page shown when a user is not authenticated.
+### MCP Tools
 
-### Supporting Components
-- `frontend/src/components/LoginModal.jsx`
-  Handles local app login using hardcoded users.
-- `frontend/src/components/ProtectedRoute.jsx`
-  Protects the `/status` route by checking `localStorage`.
-- `frontend/src/components/TopBar.jsx`
-  Shared top navigation with logo, status shortcut, and logout.
+The tool registry currently exposes these tools:
 
-### Frontend Routing
+| MCP tool | What it does |
+|----------|--------------|
+| `list_packages` | Lists SAP CPI integration packages |
+| `list_artifacts` | Lists iFlows/artifacts for one package or all packages |
+| `get_monitoring_logs` | Fetches CPI monitoring logs with status/range filters |
+| `get_monitoring_overview` | Builds a monitoring dashboard-style summary |
+| `export_monitoring_excel` | Requires package/iFlow, status, and time range; returns a CPI trigger action first so HANA is refreshed before Excel download |
+| `download_payload_zip` | Requires package/iFlow, status, and time range; returns a CPI trigger action first so HANA contains the requested payloads before ZIP download |
+| `download_payload_file` | Returns a single payload download action |
+| `send_monitoring_email` | Requires email plus package/iFlow, status, and time range; triggers CPI first so the emailed Excel is based on refreshed HANA data |
+| `list_jms_queues` | Lists JMS queues, optionally filtered to problem queues |
+| `list_jms_messages` | Lists messages inside one JMS queue |
+| `get_jms_resources` | Gets JMS broker resource/capacity details |
+| `move_jms_message` | Moves one JMS message to another queue |
+| `retry_jms_message` | Retries one failed JMS message |
+| `delete_jms_message` | Deletes one JMS message |
+| `trigger_cpi_flow` | Guides the user to the CPI trigger flow |
 
-Defined in `frontend/src/App.jsx`:
+### Why This Helps
+
+Before this change, the chatbot depended mostly on keyword rules. That made prompts brittle: small wording changes could select the wrong action, fetch too much data, or miss filters like package names and failed queues.
+
+With the MCP-style flow, OpenRouter sees rich tool descriptions and schemas, so it can map natural language like `show failed JMS queues` or `artifacts in meena_demo package` to the right backend capability with structured parameters.
+
+## UI Structure
+
+After tenant connection, the user lands on a simple launcher screen in [frontend/src/pages/TenantAccess.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/pages/TenantAccess.jsx) with two cards:
+
+- `JMS Queues`
+- `Message Monitoring Overview`
+
+The chatbot is mounted globally in [frontend/src/App.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/App.jsx) through [frontend/src/components/AppChatbot.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/components/AppChatbot.jsx). It appears as a floating assistant button and can answer prompts about the same operational areas available from the UI.
+
+Frontend routes are defined in [frontend/src/App.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/App.jsx):
 
 - `/` -> Home
 - `/login` -> Login
 - `/tenant` -> Tenant Access
-- `/status` -> Protected Status Overview
+- `/status` -> Message Monitoring Overview
+- `/jms-queues` -> JMS Queues
 - `/unauthorized` -> Unauthorized
 
-### Frontend Runtime Configuration
+## Main Pages
 
-`frontend/src/config.js` currently contains:
+### 1. Message Monitoring Overview
 
-```js
-export const API_BASE_URL = "https://backend.cfapps.us10-001.hana.ondemand.com";
+Implemented in [frontend/src/pages/StatusOverview.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/pages/StatusOverview.jsx).
+
+This UI is used for:
+
+- package selection
+- artifact selection
+- triggering CPI
+- viewing latest HANA-backed monitoring records
+- payload download
+- Excel export
+- sending Excel by email
+
+### 2. JMS Queues
+
+Implemented in [frontend/src/pages/JmsQueues.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/pages/JmsQueues.jsx).
+
+This UI is used for:
+
+- listing available JMS queues
+- viewing queue messages
+- filtering queues and messages
+- loading broker resource details
+- moving queue messages
+- retrying queue messages
+- deleting queue messages
+
+### 3. Tenant Assistant Chatbot
+
+Implemented in [frontend/src/components/AppChatbot.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/components/AppChatbot.jsx) with backend routing in [backend/server.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/server.js).
+
+The chatbot is now AI-assisted and project-aware. OpenRouter chooses from the backend MCP tool registry, then the backend executes the matching tool. The older rule-based dispatcher is still kept as a fallback when AI is unavailable.
+
+Supported prompt areas:
+
+- monitoring status
+- error and failed messages
+- reports
+- payloads
+- Excel export
+- payload zip download
+- email report sending
+- packages
+- artifacts
+- JMS queues
+- JMS queue messages
+- JMS resource details
+- JMS move
+- JMS retry
+- JMS delete
+- single payload download
+
+Example prompts:
+
+```text
+past hour error messages
+show past hour error messages
+show JMS queues
+show failed JMS queues
+show artifacts inside meena_demo package
+show messages in queue JMS_Queue_100
+show JMS resources
+move ID:10.147.158.688a3119dc16a96700:180 from JMS_Queue_100_DLQ to JMS_Queue_100
+retry ID:10.147.158.688a3119dc16a96700:180 from JMS_Queue_100_DLQ
+delete ID:10.147.158.688a3119dc16a96700:180 from JMS_Queue_100_DLQ
+download excel report
+download payload zip
+send excel report to user@example.com
+show packages
+show artifacts for package All
 ```
 
-### Frontend Authentication Model
+Follow-up behavior:
 
-Application login is currently local and UI-level only. The login modal validates against these hardcoded users:
+- If the user asks for a count, such as `past hour error messages`, the chatbot gives the count and asks whether to show the rows.
+- If the user replies `yes`, `show`, or `list`, the chatbot lists the pending result set.
+- If AI is unavailable, the backend falls back to the older rule-based prompt handling.
 
-- `admin / admin123`
-- `user / user123`
+## Current Frontend Runtime Config
 
-### Frontend Functional Flow
+[frontend/src/config.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/config.js) currently points to local backend:
 
-#### Tenant Access
-- User submits tenant credentials from `TenantAccess.jsx`.
-- Frontend calls `POST /connectTenant`.
-- On success, frontend stores:
-  - `token`
-  - `baseUrl`
-  - `packages`
-- Then it navigates to `/status`.
+```js
+export const API_BASE_URL = "http://localhost:5000";
+```
 
-#### Status Overview
-- Package list is first loaded from `localStorage`.
-- Artifact loading is lazy:
-  - If a package is selected, artifacts are loaded for that package.
-  - If package is `All`, artifacts are loaded only when the artifact selector is opened.
-- Trigger action posts filter data to `/trigger-cpi`.
-- Monitoring data is loaded from `/latest-report`.
-- Users can:
-  - refresh monitoring data
-  - download single payloads
-  - download all payloads as a zip
-  - export the monitoring report to Excel
-  - send the Excel file by email
-
-### Important Frontend Behavior
-
-- The status page uses `localStorage` for session-like state.
-- Artifact loading guards against stale requests, so quick package switching does not show a false `Failed to load artifacts.` error.
-- If `All` artifacts are loading and the user switches to a specific package, the UI keeps only the latest request result.
-- Trigger, refresh, export, and download actions are disabled while related requests are running.
+The deployed backend URL is still present as a commented line in that file.
 
 ## Backend Overview
 
-The backend lives in `backend/server.js` and exposes the REST endpoints used by the frontend.
+Backend lives in [backend/server.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/server.js).
 
-### Key Responsibilities
-- Validate SAP tenant connectivity
-- Get OAuth access tokens
-- Discover CPI packages and artifacts
-- Trigger CPI iFlows
-- Read monitoring data from SAP HANA
-- Return payload files
-- Export monitoring data to Excel
-- Zip payload files for bulk download
-- Send exported Excel files through SMTP
+Main responsibilities:
 
-### Backend Middleware
-- `cors`
-- `express.json({ limit: "10mb" })`
-- `express.text({ type: "text/*" })`
+- tenant connection and OAuth token retrieval
+- package and artifact discovery
+- JMS queue and JMS message management
+- CPI trigger calls
+- HANA monitoring reads
+- payload download
+- Excel generation
+- zip generation
+- email sending
 
-The current backend CORS configuration is:
+Backend dependencies are defined in [backend/package.json](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/package.json).
 
-```js
-export const API_BASE_URL = "https://backend.cfapps.us10-001.hana.ondemand.com";
-```
+## Backend API List
 
-This allows requests from any origin. It is useful for development, but it should be restricted to the deployed frontend origin in production.
+These are the current backend endpoints implemented in `server.js`.
 
-## Backend Helper Logic
+### Tenant Connection
 
-### HANA Access
-- `getConnection()`
-  Opens an SAP HANA connection using environment variables.
-- `getReportRows(conn)`
-  Reads monitoring rows from `HACKTHON-POC.CPI_DATA`.
-- `getPayloadRow(conn, mplId, logStart, attachmentTimestamp)`
-  Fetches one payload record for file download.
+#### `POST /connectTenant`
 
-### Payload Utilities
-- `decodePayload(payload)`
-  Decodes Base64 payloads when possible.
-- `formatFileName(fileName, fileType, fallbackPrefix)`
-  Ensures a proper file name and extension.
-- `sanitizeFileName(value, fallback)`
-  Removes invalid filename characters.
-- `mapReportRow(row, index)`
-  Converts database rows into frontend-ready objects.
+Connects to SAP tenant using:
 
-### Excel Export
-- `createReportsExcelBuffer(reports)`
-  Builds an Excel workbook named `Monitoring Overview` and writes report rows into it.
-
-### Zip Export
-- `createReportsZip(reports)`
-  Writes payload files into a temporary folder and compresses them into a `.zip` using PowerShell.
-
-### CPI Tenant Discovery
-- `cleanUrl(url)`
-  Trims values and removes trailing slashes.
-- `buildBaseUrlCandidates(baseUrl)`
-  Tries both `.cfapps.` and `-rt.cfapps.` variations where needed.
-- `tenantHeaders(token)`
-  Returns CPI request headers.
-- `fetchPackages(baseUrl, token)`
-  Fetches integration packages and resolves the working API base URL.
-- `fetchArtifactsForPackage(baseUrl, token, packageId)`
-  Fetches artifacts with retry and backoff and uses a 60 second timeout per package request.
-- `fetchArtifactsForPackagesInBatches(baseUrl, token, packages)`
-  Fetches artifacts in limited parallel batches and keeps successful package results even if some packages fail.
-- `getArtifactCacheEntry(cacheKey)`
-  Returns a valid in-memory artifact cache entry.
-
-### CPI Trigger Support
-- `getTriggerCredentials()`
-  Resolves trigger credentials from environment variables.
-- `getAccessToken()`
-  Gets an OAuth token using backend environment variables.
-
-## Backend API Reference
-
-### `POST /connectTenant`
-
-Connects to a tenant using client credentials and fetches packages.
+- `clientId`
+- `clientSecret`
+- `tokenUrl`
+- `baseUrl`
 
 Request body:
 
@@ -232,76 +243,142 @@ Request body:
 ```
 
 Response:
-- `message`
-- `packages`
-- `token`
-- `credentialSource`
-- `baseUrl`
 
-### `POST /getArtifacts`
+```json
+{
+  "message": "Tenant Connected Successfully",
+  "packages": [],
+  "token": "access-token",
+  "baseUrl": "resolved-base-url",
+  "credentialSource": "trigger-env or request-env"
+}
+```
 
-Fetches artifacts for one package or all packages.
+### Package And Artifact APIs
+
+#### `POST /getArtifacts`
+
+Fetches artifacts for one package or for all packages.
 
 Request body:
 
 ```json
 {
   "packageId": "All",
-  "token": "<tenant-access-token>",
+  "token": "tenant-access-token",
   "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com"
 }
 ```
 
-Response:
+Response includes:
+
 - `artifacts`
 - `packages`
 - `baseUrl`
-- `cached` when served from cache
-- `partial` for `All` artifact requests
-- `failedPackages` for packages that timed out or failed during `All` loading
+- `cached`
+- `partial`
+- `failedPackages`
 
-### `POST /getMessages`
+### Chatbot API
 
-Reads CPI message processing logs directly from the tenant API.
+#### `POST /chatbot/query`
+
+Processes a prompt through the MCP tool-calling flow and dispatches it to the same backend capabilities used by the manual UI. If AI is unavailable, the rule-based dispatcher is used as fallback.
 
 Request body:
 
 ```json
 {
-  "token": "<tenant-access-token>",
+  "prompt": "past hour error messages",
+  "token": "tenant-access-token",
+  "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com",
+  "packages": []
+}
+```
+
+Response shape:
+
+```json
+{
+  "message": "Found 5 matching monitoring message(s) in the past hour. Do you want to see them?",
+  "items": [],
+  "pendingItems": [],
+  "actions": [],
+  "notApplicable": false
+}
+```
+
+Main response fields:
+
+- `message`: chatbot text shown to the user
+- `items`: rows to display immediately
+- `pendingItems`: rows saved for a follow-up `yes`, `show`, or `list`
+- `actions`: downloadable or executable actions, such as Excel export
+- `notApplicable`: true when the prompt is outside the application domain
+
+Supported backend dispatch:
+
+- monitoring report count/list from HANA
+- error and status filtering
+- payload zip action
+- Excel download action
+- email action when an email address is provided
+- package listing from local session data
+- artifact listing from CPI APIs
+- JMS queue listing
+- JMS queue message listing
+- JMS resource details
+- JMS move execution
+- JMS retry execution
+- JMS delete execution
+
+AI/MCP implementation files:
+
+- [backend/mcp/toolRegistry.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/toolRegistry.js)
+- [backend/mcp/toolHandlers.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/toolHandlers.js)
+- [backend/mcp/mcpClient.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/mcpClient.js)
+- [backend/mcp/summarizer.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/summarizer.js)
+
+### Message Monitoring Overview APIs
+
+These are used by the `Message Monitoring Overview` UI.
+
+#### `POST /getMessages`
+
+Reads CPI message processing logs from the tenant API.
+
+Request body:
+
+```json
+{
+  "token": "tenant-access-token",
   "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com",
   "status": "COMPLETED",
-  "artifactName": "IFLOW_NAME_OR_All",
+  "artifactName": "All",
   "fromDate": "2026-03-01T00:00:00",
   "toDate": "2026-03-10T23:59:59"
 }
 ```
 
-Response:
-- `messages`
+#### `POST /trigger-cpi`
 
-### `POST /trigger-cpi`
+Triggers CPI with selected filter values.
 
-Posts the selected filters to the CPI trigger endpoint using Basic Auth credentials from environment variables.
-
-Typical request body from the frontend:
+Typical request:
 
 ```json
 {
   "BASE_URL": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com",
   "IFLOW_NAME": "All",
-  "STATUS": "All",
+  "STATUS": "",
   "FROM_DATE": "2026-03-01T00:00:00",
   "TO_DATE": "2026-03-10T23:59:59"
 }
 ```
 
-Response:
-- plain text or serialized JSON from CPI
+#### `POST /post-selection`
 
-### `POST /post-selection`
-
-Alternative trigger endpoint that posts a simplified selection payload using a Bearer token from backend environment variables.
+Alternative CPI trigger endpoint.
 
 Request body:
 
@@ -314,28 +391,35 @@ Request body:
 }
 ```
 
-### `GET /latest-report`
+#### `GET /latest-report`
 
-Returns the latest monitoring records from HANA.
+Returns monitoring rows from HANA.
 
 Response:
-- `reports`
 
-### `GET /payload-file`
+```json
+{
+  "reports": []
+}
+```
 
-Returns one payload file from HANA based on:
+#### `GET /payload-file`
+
+Fetches a single payload file.
+
+Query params:
 
 - `mplId`
 - `logStart`
 - `attachmentTimestamp`
 
-### `GET /export-reports-excel`
+#### `GET /export-reports-excel`
 
-Returns the current monitoring report as an `.xlsx` file.
+Exports the current monitoring report as Excel.
 
-### `POST /send-excel-email`
+#### `POST /send-excel-email`
 
-Sends the generated Excel report as an email attachment.
+Emails the generated Excel file.
 
 Request body:
 
@@ -347,97 +431,318 @@ Request body:
 }
 ```
 
-### `GET /download-reports-zip`
+#### `GET /download-reports-zip`
 
-Returns all payload files as a zip archive.
+Downloads all available payload files as a zip archive.
 
-### Debug Endpoints
+### JMS Queues APIs
 
-- `POST /cpi-data`
-- `GET /cpi-data`
+These are used by the `JMS Queues` UI.
 
-These endpoints keep received CPI payloads in memory and are useful only for debugging or temporary testing.
+#### `POST /jms-queues`
 
-## Database Details
+Fetches queue list.
 
-The backend reads monitoring data from:
+Request body:
 
-- Schema: `HACKTHON-POC`
-- Table: `CPI_DATA`
+```json
+{
+  "token": "tenant-access-token",
+  "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com"
+}
+```
 
-Columns used by the app include:
+Response:
 
-- `MPL_ID`
-- `IFLOW_NAME`
-- `STATUS`
-- `LOG_START`
-- `LOG_END`
-- `ERROR_INFO`
-- `ATTACHMENT_NAME`
-- `ATTACHMENT_TIMESTAMP`
-- `PAYLOAD_FILE_NAME`
-- `PAYLOAD_FILE_TYPE`
-- `PAYLOAD_MIME_TYPE`
-- `PAYLOAD_ENCODING`
-- `PAYLOAD`
-- `CREATED_AT`
+```json
+{
+  "queues": [
+    {
+      "id": "queue-id",
+      "key": "queue-id",
+      "name": "JMS_Queue_100",
+      "accessType": "Non-Exclusive",
+      "usage": "OK",
+      "state": "Started",
+      "entries": 5
+    }
+  ]
+}
+```
+
+#### `POST /jms-messages`
+
+Fetches messages for a selected queue.
+
+Request body:
+
+```json
+{
+  "token": "tenant-access-token",
+  "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com",
+  "queueName": "JMS_Queue_100",
+  "queueKey": "JMS_Queue_100"
+}
+```
+
+Response:
+
+```json
+{
+  "messages": [
+    {
+      "id": "internal-id",
+      "jmsMessageId": "ID:10.147.158.688a3119dc16a96700:180",
+      "messageId": "correlation-or-mpl-id",
+      "failed": true,
+      "status": "Failed",
+      "dueAt": "2026-04-29 12:00:00",
+      "createdAt": "2026-04-29 11:00:00",
+      "retainUntil": "2026-05-01 11:00:00",
+      "retryCount": "3",
+      "nextRetryOn": "2026-04-29 12:30:00",
+      "correlationId": "correlation-id",
+      "iflowName": "SampleIflow",
+      "packageName": "SamplePackage"
+    }
+  ]
+}
+```
+
+#### `POST /jms-resource-details`
+
+Fetches broker resource details for `Broker1`.
+
+Request body:
+
+```json
+{
+  "token": "tenant-access-token",
+  "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com",
+  "brokerKey": "Broker1"
+}
+```
+
+#### `POST /jms-messages/move`
+
+Moves selected JMS messages from one queue to another.
+
+Request body:
+
+```json
+{
+  "token": "tenant-access-token",
+  "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com",
+  "sourceQueueName": "JMS_Queue_100_DLQ",
+  "targetQueueName": "JMS_Queue_100",
+  "messages": [
+    {
+      "jmsMessageId": "ID:10.147.158.688a3119dc16a96700:180",
+      "failed": true
+    }
+  ]
+}
+```
+
+Current behavior:
+
+- first tries a direct API route against `.../api/v1`
+- fetches CSRF token from `.../api/v1/`
+- loads queue entity
+- sends direct queue move request using:
+
+```text
+PATCH /api/v1/Queues('<sourceQueue>')?operation=move&target_queue=<targetQueue>&selector=JMSMessageID='<messageId>'
+```
+
+- if direct route fails, backend still has fallback move attempts
+
+This direct route is the one currently proven to work from your backend.
+
+#### `POST /jms-messages/retry`
+
+Retries selected JMS messages.
+
+Request body:
+
+```json
+{
+  "token": "tenant-access-token",
+  "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com",
+  "sourceQueueName": "JMS_Queue_100_DLQ",
+  "messages": [
+    {
+      "jmsMessageId": "ID:10.147.158.688a3119dc16a96700:180",
+      "failed": true
+    }
+  ]
+}
+```
+
+Current retry flow in backend:
+
+- tries direct queue retry first:
+
+```text
+PATCH /api/v1/Queues('<sourceQueue>')?operation=retry&selector=JMSMessageID='<messageId>'
+```
+
+- if that fails, tries batch-based retry
+- if that also fails, tries a direct `JmsMessages(...)` merge-style fallback
+- route currently exists and is testable from UI
+
+#### `POST /jms-messages/delete`
+
+Deletes selected JMS messages.
+
+Request body:
+
+```json
+{
+  "token": "tenant-access-token",
+  "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com",
+  "sourceQueueName": "JMS_Queue_100_DLQ",
+  "messages": [
+    {
+      "jmsMessageId": "ID:10.147.158.688a3119dc16a96700:180",
+      "failed": true
+    }
+  ]
+}
+```
+
+Delete uses:
+
+```text
+DELETE /api/v1/JmsMessages(Msgid='<msgId>',Name='<queueName>',Failed=true|false)
+```
+
+This path is currently working.
+
+### Debug APIs
+
+#### `POST /cpi-data`
+#### `GET /cpi-data`
+
+Temporary in-memory debug endpoints for received CPI data.
+
+## How The Two UIs Work
+
+### Message Monitoring Overview Flow
+
+1. Connect tenant on `/tenant`
+2. Frontend stores:
+   - `token`
+   - `baseUrl`
+   - `packages`
+   - `tenantAccessComplete`
+3. Open `/status`
+4. Load monitoring data from backend
+5. Trigger CPI, refresh reports, download payloads, export Excel, or send email
+
+### JMS Queues Flow
+
+1. Connect tenant on `/tenant`
+2. Open `/jms-queues`
+3. Frontend loads queue list through `/jms-queues`
+4. Select queue to load queue messages through `/jms-messages`
+5. Use:
+   - `Move`
+   - `Retry`
+   - `Delete`
+   - `Usage`
+
+Frontend notes from current code:
+
+- `Retry` button is disabled if any selected message has status `Waiting`
+- `Delete` uses typed confirmation: user must type `DELETE`
+- `Move` opens target queue dialog
+
+### Tenant Assistant Chatbot Flow
+
+1. User clicks the floating assistant button.
+2. User enters a prompt.
+3. Frontend sends `POST /chatbot/query` with:
+   - prompt
+   - tenant token
+   - tenant base URL
+   - stored packages
+4. Backend calls `runMcpChat` from `backend/mcp/mcpClient.js`.
+5. OpenRouter receives the prompt plus the 15 tool schemas.
+6. OpenRouter returns a selected tool and structured arguments.
+7. `toolHandlers.js` executes the selected operation using existing `server.js` functions.
+8. `summarizer.js` turns the raw result into a concise answer.
+9. Frontend renders:
+   - text answer
+   - matching rows
+   - follow-up list results
+   - download/action buttons
+
+If OpenRouter is not configured or the MCP flow fails, `server.js` falls back to the old rule-based chatbot logic.
 
 ## Environment Variables
 
-Create a `.env` file in `backend/` with the required values.
+Create `backend/.env`.
 
-### Required for CPI OAuth
+### Required for tenant OAuth
+
 - `TOKEN_URL`
 - `CLIENT_ID`
 - `CLIENT_SECRET`
 
-### Required for Triggering
+### Required for CPI triggering
+
 - `CPI_TRIGGER_ENDPOINT`
 
-The backend can also use these trigger credential variables:
+Optional trigger credentials:
 
 - `TRIGGER_CLIENT_ID`
 - `TRIGGER_CLIENT_SECRET`
+- fallback to `IFLOW_CLIENT_ID`
+- fallback to `IFLOW_CLIENT_SECRET`
+- fallback to `CLIENT_ID`
+- fallback to `CLIENT_SECRET`
 
-If they are not provided, it falls back to:
+### Required for HANA
 
-- `IFLOW_CLIENT_ID`
-- `IFLOW_CLIENT_SECRET`
-
-If those are also not provided, it falls back to:
-
-- `CLIENT_ID`
-- `CLIENT_SECRET`
-
-### Required for SAP HANA
 - `HANA_SERVER`
 - `HANA_USER`
 - `HANA_PASSWORD`
 
 ### Required for Email
+
 - `SMTP_HOST`
 - `SMTP_PORT`
 - `SMTP_USER`
 - `SMTP_PASS`
 
-### Optional for Email
+Optional:
+
 - `SMTP_FROM`
 
-### Important Dependency Note
+### Required for AI/MCP Chatbot
 
-- `backend/server.js` imports `@sap/hana-client`.
-- This package is currently used by the app, but it is not listed in `backend/package.json`.
-- Add it before doing a clean setup on a new machine or deployment target.
+- `OPENAI_API_KEY` or `AI_INTENT_API_KEY`
+- `AI_INTENT_MODEL`
+- `AI_INTENT_APP_URL`
+- `AI_INTENT_APP_NAME`
+
+Example:
+
+```env
+OPENAI_API_KEY=your-openrouter-key
+AI_INTENT_MODEL=nex-agi/nex-n2-pro:free
+AI_INTENT_APP_URL=http://localhost:5173
+AI_INTENT_APP_NAME=Tenant Access
+```
+
+Optional:
+
+- `AI_SUMMARIZER_MODEL`
 
 ## Local Development
 
-### Prerequisites
-- Node.js and npm
-- Access to SAP CPI tenant credentials
-- Access to SAP HANA
-- PowerShell available on the machine
-
-### Backend Setup
+### Backend
 
 ```powershell
 cd backend
@@ -445,15 +750,14 @@ npm install
 npm start
 ```
 
-For development with auto-restart:
+or
 
 ```powershell
 cd backend
-npm install
 npm run dev
 ```
 
-### Frontend Setup
+### Frontend
 
 ```powershell
 cd frontend
@@ -468,133 +772,51 @@ cd frontend
 npm run build
 ```
 
-## Deployment Notes
+## Important Notes
 
-### SAP BTP Deployment
-- Frontend and backend are intended to be deployable separately.
-- The frontend is currently configured to call `https://backend.cfapps.us10-001.hana.ondemand.com`.
-- Backend CORS is currently open to all origins.
-
-### Runtime URL Alignment
-
-For a successful deployment, these values must stay aligned:
-
-- frontend `API_BASE_URL`
-- backend allowed CORS origin
-- SAP CPI tenant URLs submitted in the UI
-- backend environment variables for trigger and HANA access
-
-## Known Operational Behavior
-
-- Artifact discovery uses in-memory caching for 5 minutes.
-- Artifact loading retries transient CPI failures with exponential backoff.
-- Bulk artifact loading fetches packages in batches.
-- `All` artifact loading returns successful package artifacts even if some packages time out or fail.
-- Artifact fetch timeout is currently 60 seconds per package request.
-- Payload zip generation depends on PowerShell `Compress-Archive`.
-- App login is hardcoded and not integrated with enterprise identity.
-- `requirements.txt` is only a dependency reference note and is not used to install the Node.js project.
-
-## Suggested Production Improvements
-
-- Add `@sap/hana-client` to `backend/package.json`.
-- Replace hardcoded frontend login with SAP IAS, XSUAA, or another real identity provider.
-- Move frontend API base URL to an environment-driven configuration model.
-- Restrict backend CORS to the actual frontend origin instead of allowing all origins.
-- Add backend request validation for all payloads.
-- Add structured logging and error monitoring.
-- Add tests for backend endpoints and frontend flows.
-- Consider streaming or chunking for very large payload exports.
-- Replace in-memory debug storage with persistent or disabled-by-default diagnostics.
-
-## Changes Recommended
-
-1. Add `@sap/hana-client` to `backend/package.json`.
-   The backend imports it already, but a clean install from `package.json` alone will miss it.
-
-2. Move `frontend/src/config.js` to environment-based configuration.
-   The repo is currently manually switched between local and deployed backend URLs.
-
-3. Restrict CORS in the backend.
-   `app.use(cors())` is fine for development, but production should allow only the frontend domain.
-
-4. Show partial artifact load warnings in the UI.
-   The backend now returns `failedPackages`, but the frontend does not yet show a warning when some packages are skipped.
-
-5. Add automated tests.
-   There are currently no backend route tests or frontend behavior tests in the project.
+- App login is still local UI login, not SAP IAS
+- current frontend API base is local backend
+- JMS `Move` direct API route is working from backend
+- JMS `Delete` is working
+- JMS `Retry` route exists and should be tested against your tenant with failed messages
+- HANA monitoring data is still a core part of the `Message Monitoring Overview` UI
+- Chatbot now uses OpenRouter MCP-style tool calling first, with rule-based fallback
+- Do not commit `.env` or API keys. Rotate the OpenRouter key immediately if it is exposed.
 
 ## Quick Test Flow
 
-1. Open the frontend.
-2. Log in with `admin/admin123` or `user/user123`.
-3. Open the tenant access page.
-4. Enter tenant `clientId`, `clientSecret`, `tokenUrl`, and `baseUrl`.
-5. Connect the tenant.
-6. Open the status page.
-7. Select package, artifact, status, and time range.
-8. Trigger CPI.
-9. Refresh monitoring data.
-10. Download payloads or export Excel if needed.
+1. Start backend
+2. Start frontend
+3. Log in with local app credentials
+4. Connect tenant on `/tenant`
+5. Test `Message Monitoring Overview`
+6. Test `JMS Queues`
+7. For JMS:
+   - load queues
+   - open a queue
+   - select failed messages
+   - test `Move`
+   - test `Retry`
+   - test `Delete`
+8. For chatbot:
+   - click the assistant button
+   - ask `past hour error messages`
+   - reply `yes`
+   - ask `show JMS queues`
+   - ask `show failed JMS queues`
+   - ask `show artifacts inside meena_demo package`
+   - ask `download excel report`
 
-## API Examples
+## Files To Know
 
-### Connect Tenant
-
-```http
-POST /connectTenant
-Content-Type: application/json
-```
-
-```json
-{
-  "clientId": "your_client_id",
-  "clientSecret": "your_client_secret",
-  "tokenUrl": "https://<tenant>.authentication.<region>.hana.ondemand.com/oauth/token",
-  "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com"
-}
-```
-
-### Get Artifacts
-
-```http
-POST /getArtifacts
-Content-Type: application/json
-```
-
-```json
-{
-  "packageId": "All",
-  "token": "<Bearer token from connectTenant>",
-  "baseUrl": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com"
-}
-```
-
-### Trigger CPI
-
-```http
-POST /trigger-cpi
-Content-Type: application/json
-```
-
-```json
-{
-  "BASE_URL": "https://<tenant>.it-cpi001.cfapps.<region>.hana.ondemand.com",
-  "IFLOW_NAME": "IF_SAMPLE",
-  "STATUS": "COMPLETED",
-  "FROM_DATE": "2026-03-01T00:00:00",
-  "TO_DATE": "2026-03-10T23:59:59"
-}
-```
-
-## Summary
-
-This project provides a practical SAP CPI monitoring workflow with:
-
-- tenant connection
-- package and artifact discovery
-- CPI trigger execution
-- HANA-backed monitoring
-- payload download
-- Excel export
-- email delivery support
+- [backend/server.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/server.js)
+- [backend/mcp/toolRegistry.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/toolRegistry.js)
+- [backend/mcp/toolHandlers.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/toolHandlers.js)
+- [backend/mcp/mcpClient.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/mcpClient.js)
+- [backend/mcp/summarizer.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/summarizer.js)
+- [backend/package.json](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/package.json)
+- [frontend/src/App.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/App.jsx)
+- [frontend/src/config.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/config.js)
+- [frontend/src/pages/TenantAccess.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/pages/TenantAccess.jsx)
+- [frontend/src/pages/StatusOverview.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/pages/StatusOverview.jsx)
+- [frontend/src/pages/JmsQueues.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/pages/JmsQueues.jsx)

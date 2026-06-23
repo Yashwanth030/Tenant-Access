@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Box,
   Button,
@@ -8,16 +8,14 @@ import {
   TextField,
   Typography,
   Alert,
-  InputAdornment
+  InputAdornment,
+  CircularProgress
 } from "@mui/material";
 
 import CableRoundedIcon from "@mui/icons-material/CableRounded";
 import HubRoundedIcon from "@mui/icons-material/HubRounded";
 import VpnKeyRoundedIcon from "@mui/icons-material/VpnKeyRounded";
 import KeyRoundedIcon from "@mui/icons-material/KeyRounded";
-import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
-import FormatListBulletedRoundedIcon from "@mui/icons-material/FormatListBulletedRounded";
-import MonitorHeartRoundedIcon from "@mui/icons-material/MonitorHeartRounded";
 
 import { useNavigate } from "react-router-dom";
 import TopBar from "../components/TopBar";
@@ -44,8 +42,40 @@ const TenantAccess = () => {
   const [isError, setIsError] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isConnected, setIsConnected] = useState(hasStoredTenantSession);
+  const [queueCount, setQueueCount] = useState(0);
+  const [queueCountLoading, setQueueCountLoading] = useState(false);
 
   const navigate = useNavigate();
+
+  const loadQueueCount = async () => {
+    const token = localStorage.getItem("token");
+    const baseUrl = localStorage.getItem("baseUrl");
+
+    if (!token || !baseUrl) return;
+
+    setQueueCountLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/jms-queues`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, baseUrl })
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.queues) {
+        setQueueCount(data.queues.length);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setQueueCountLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isConnected) loadQueueCount();
+  }, [isConnected]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -67,24 +97,30 @@ const TenantAccess = () => {
       const response = await fetch(`${API_BASE_URL}/connectTenant`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientId, clientSecret, tokenUrl: cleanToken, baseUrl: cleanBase })
+        body: JSON.stringify({
+          clientId,
+          clientSecret,
+          tokenUrl: cleanToken,
+          baseUrl: cleanBase
+        })
       });
 
       const result = await response.json();
 
       if (result.packages) {
-        setIsError(false);
         setMessage(result.message);
+        setIsError(false);
+
         localStorage.setItem("token", result.token);
         localStorage.setItem("baseUrl", result.baseUrl || cleanBase);
         localStorage.setItem("packages", JSON.stringify(result.packages || []));
         localStorage.setItem("tenantAccessComplete", "true");
+
         setIsConnected(true);
       } else {
         setIsError(true);
         setMessage(result.message || "Connection Failed");
       }
-
     } catch {
       setIsError(true);
       setMessage("Connection Failed. Please check credentials.");
@@ -97,7 +133,7 @@ const TenantAccess = () => {
     <Box
       sx={{
         minHeight: "100vh",
-        background: "#f6f8fb",
+        background: "linear-gradient(120deg, #ffffff, #ffffff)",
         display: "flex",
         flexDirection: "column"
       }}
@@ -114,14 +150,7 @@ const TenantAccess = () => {
             width: { xs: "calc(100% - 32px)", sm: 360 }
           }}
         >
-          <Alert
-            severity={isError ? "error" : "success"}
-            sx={{
-              borderRadius: 2,
-              boxShadow: "0 18px 34px rgba(15, 23, 42, 0.18)",
-              border: "1px solid rgba(15, 23, 42, 0.12)"
-            }}
-          >
+          <Alert severity={isError ? "error" : "success"}>
             {message}
           </Alert>
         </Box>
@@ -132,136 +161,157 @@ const TenantAccess = () => {
         sx={{
           flex: 1,
           display: "flex",
-          flexDirection: "column",
           alignItems: "center",
-          justifyContent: "center",
-          gap: { xs: 2, md: 3 },
-          py: { xs: 4, md: 6 }
+          justifyContent: "center"
         }}
       >
         {isConnected ? (
-          <Paper
-            elevation={0}
-            sx={{
-              width: "100%",
-              p: { xs: 3, md: 4 },
-              borderRadius: 3,
-              background: "#f8fafc",
-              border: "1px solid #d7dee8",
-              boxShadow: "0 24px 60px rgba(15, 23, 42, 0.08)"
-            }}
-          >
-            <Stack spacing={3} sx={{ width: "100%" }}>
-              <Stack spacing={1} alignItems="center">
-                <Typography variant="h4" fontWeight="bold">
-                  Tenant Connected
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                </Typography>
-              </Stack>
+<Paper
+  sx={{
+    width: "100%",
+    maxWidth: 720,
+    p: 4,
+    borderRadius: 3,
+    background: "rgba(13, 129, 182, 0.8)",
+    backdropFilter: "blur(12px)",
+    boxShadow: "0 25px 60px rgba(0,0,0,0.08)"
+  }}
+>
+  <Stack spacing={4} alignItems="center">
 
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={2.5}>
-                <Button
-                  fullWidth
-                  variant="contained"
-                  size="large"
-                  startIcon={<MonitorHeartRoundedIcon />}
-                  endIcon={<ArrowForwardRoundedIcon />}
-                  onClick={() => navigate("/status")}
-                  sx={{
-                    minHeight: 82,
-                    justifyContent: "space-between",
-                    px: 3,
-                    borderRadius: 2,
-                    background: "#0b84d6",
-                    fontSize: 16,
-                    fontWeight: 800
-                  }}
-                >
-                  Message Monitoring Overview
-                </Button>
-                <Button
-                  fullWidth
-                  variant="contained"
-                  size="large"
-                  startIcon={<FormatListBulletedRoundedIcon />}
-                  endIcon={<ArrowForwardRoundedIcon />}
-                  onClick={() => navigate("/jms-queues")}
-                  sx={{
-                    minHeight: 82,
-                    justifyContent: "space-between",
-                    px: 3,
-                    borderRadius: 2,
-                    background: "#0b84d6",
-                    fontSize: 16,
-                    fontWeight: 800
-                  }}
-                >
-                  JMS Queues
-                </Button>
-              </Stack>
-            </Stack>
-          </Paper>
+    <Typography
+      sx={{
+        fontSize: 32,
+        fontWeight: 700,
+        letterSpacing: "0.5px",
+        color: "#ffffff",
+        fontFamily: "Inter, sans-serif"
+      }}
+    >
+      Monitoring Status Overview
+    </Typography>
+
+    <Stack direction="row" spacing={4}>
+     
+      <Paper
+        onClick={() => navigate("/jms-queues")}
+        sx={{
+          width: 270,
+          height: 210,
+          borderRadius: 4,
+          background: "#ffffff",
+          border: "1px solid rgba(0,0,0,0.06)",
+          p: 3,
+          cursor: "pointer",
+          position: "relative",
+          transition: "all 0.3s ease",
+          boxShadow: "0 8px 20px rgba(0,0,0,0.06)",
+
+          "&:hover": {
+            background: "#e9e9e9",
+            transform: "translateY(-2px)",
+            boxShadow: "0 20px 40px rgba(0,0,0,0.12)"
+          }
+        }}
+      >
+        <Typography
+          sx={{
+            fontSize: 24,
+            fontWeight: 600,
+            color: "#1e293b"
+          }}
+        >
+          JMS Queues
+        </Typography>
+        {queueCountLoading ? (
+          <CircularProgress
+            sx={{ position: "absolute", bottom: 45, right: 45 }}
+          />
         ) : (
-          <Paper
-            elevation={8}
-            sx={{
-              width: "100%",
-              p: { xs: 3, md: 4 },
-              borderRadius: 3,
-              backdropFilter: "blur(10px)",
-              background: "linear-gradient(150deg, rgba(112, 151, 156, 0.48) 0%, rgba(100, 152, 231, 0.44) 100%)",
-              border: "1px solid rgba(148, 163, 184, 0.35)",
-              boxShadow: "0 28px 70px rgba(15, 23, 42, 0.18)"
-            }}
-          >
+          <>
+            <Typography
+              sx={{
+                position: "absolute",
+                bottom: 40,
+                right: 25,
+                fontSize: 58,
+                fontWeight: 600,
+                color: "#94a3b8"
+              }}
+            >
+              {queueCount}
+            </Typography>
+
+            <Typography
+              sx={{
+                position: "absolute",
+                bottom: 15,
+                left: 20,
+                fontSize: 16,
+                color: "#94a3b8"
+              }}
+            >
+              Queues
+            </Typography>
+          </>
+        )}
+      </Paper>
+ <Paper
+        onClick={() => navigate("/status")}
+        sx={{
+          width: 270,
+          height: 210,
+          borderRadius: 4,
+          background: "#ffffff",
+          border: "1px solid rgba(0,0,0,0.06)",
+          p: 3,
+          cursor: "pointer",
+          transition: "all 0.3s ease",
+          boxShadow: "0 8px 20px rgba(0,0,0,0.06)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",  
+          "&:hover": {
+            background: "#e9e9e9",
+            transform: "translateY(-2px)",
+            boxShadow: "0 20px 40px rgba(0,0,0,0.12)"
+          }
+        }}
+      >
+        <Typography
+          sx={{
+            fontSize: 24,
+            fontWeight: 500,
+            lineHeight: 1.3,
+            color: "#0f172a"
+          }}
+        >
+          Message <br />
+          Monitoring <br />
+          Overview
+        </Typography>
+      </Paper>
+    </Stack>
+  </Stack>
+</Paper>
+        ) : (
+          <Paper sx={{ width: "100%", p: 4 }}>
             <Stack spacing={2} component="form" onSubmit={handleSubmit}>
-
-              <Stack spacing={2} alignItems="center">
-                <Typography variant="h4" fontWeight="bold">
-                  Access Tenant
-                </Typography>
-
-                <Typography variant="body2" color="text.secondary">
-                  Connect your SAP tenant using Client Credentials
-                </Typography>
-              </Stack>
+              <Typography variant="h4">Access Tenant</Typography>
 
               <TextField
                 placeholder="Client ID"
                 value={clientId}
                 onChange={(e) => setClientId(e.target.value)}
                 fullWidth
-                required
-                InputProps={{
-                  sx: {
-                    fontSize: 15
-                  },
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <VpnKeyRoundedIcon />
-                    </InputAdornment>
-                  )
-                }}
               />
 
               <TextField
                 placeholder="Client Secret"
-                type="password"
                 value={clientSecret}
                 onChange={(e) => setClientSecret(e.target.value)}
                 fullWidth
-                required
-                InputProps={{
-                  sx: {
-                    fontSize: 15
-                  },
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <KeyRoundedIcon />
-                    </InputAdornment>
-                  )
-                }}
               />
 
               <TextField
@@ -269,17 +319,6 @@ const TenantAccess = () => {
                 value={tokenUrl}
                 onChange={(e) => setTokenUrl(e.target.value)}
                 fullWidth
-                required
-                InputProps={{
-                  sx: {
-                    fontSize: 15
-                  },
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <CableRoundedIcon />
-                    </InputAdornment>
-                  )
-                }}
               />
 
               <TextField
@@ -287,35 +326,11 @@ const TenantAccess = () => {
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
                 fullWidth
-                required
-                InputProps={{
-                  sx: {
-                    fontSize: 15
-                  },
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <HubRoundedIcon />
-                    </InputAdornment>
-                  )
-                }}
               />
 
-              <Button
-                type="submit"
-                variant="contained"
-                size="large"
-                disabled={isLoading}
-                sx={{
-                  height: 50,
-                  fontWeight: "bold",
-                  borderRadius: 3,
-                  background:
-                    "linear-gradient(90deg,#0b84d6,#4cc3ff)"
-                }}
-              >
+              <Button type="submit" variant="contained">
                 {isLoading ? "Connecting..." : "Connect"}
               </Button>
-
             </Stack>
           </Paper>
         )}

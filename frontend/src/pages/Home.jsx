@@ -21,11 +21,14 @@ function Home() {
             alt="Icon"
             className="landing-logo"
           /> */}
-          <h5 className="landing-title">
-            Welcome to
-          </h5>
           <h2 className="landing-title">
-            CPI Monitoring Overview
+            Welcome to
+          </h2>
+          <h2 className="landing-title">
+            Integration suite
+          </h2>
+          <h2 className="landing-title">
+            Monitoring Overview
           </h2>
           <button
             className="login-btn"
