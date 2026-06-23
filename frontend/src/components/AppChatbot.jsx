@@ -188,6 +188,17 @@ const downloadFromAction = async (action) => {
   URL.revokeObjectURL(objectUrl);
 };
 
+const readActionResponse = async (response) => {
+  const contentType = response.headers.get("content-type") || "";
+
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+
+  const text = await response.text();
+  return { message: text || (response.ok ? "Action completed." : "Action failed.") };
+};
+
 const AppChatbot = () => {
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
@@ -289,10 +300,19 @@ const AppChatbot = () => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(action.body || {})
         });
-        const data = await response.json();
+        const data = await readActionResponse(response);
+        if (!response.ok) {
+          throw new Error(toDisplayText(data.message, "Action failed."));
+        }
+
         setMessages((current) => [
           ...current,
-          { role: "bot", text: toDisplayText(data.message, "Action completed."), items: [], actions: [] }
+          {
+            role: "bot",
+            text: action.successMessage || toDisplayText(data.message, "Action completed."),
+            items: [],
+            actions: Array.isArray(action.nextActions) ? action.nextActions : []
+          }
         ]);
       }
     } catch (error) {

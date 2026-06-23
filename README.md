@@ -15,6 +15,80 @@ The app has a React frontend and an Express backend. A user connects to a tenant
 - manage JMS queue messages with `Move`, `Retry`, and `Delete`
 - ask the chatbot for the same operational data and actions available manually in the UI
 
+## AI And MCP Server Update
+
+The chatbot now uses an in-process MCP-style tool calling flow powered by OpenRouter. MCP here means the backend exposes a registry of safe application tools to the AI model, the model chooses the right tool for the user's prompt, and the backend executes that tool using existing server functions.
+
+There is no separate MCP server process. The MCP layer lives inside the existing Express backend process in `backend/server.js`.
+
+### What Changed
+
+New files were added under `backend/mcp`:
+
+- `toolRegistry.js`: defines 15 AI-callable tools with names, descriptions, and JSON input schemas
+- `toolHandlers.js`: maps each tool to existing backend functions in `server.js`
+- `mcpClient.js`: sends the user prompt and tool schemas to OpenRouter and receives the selected `tool_call`
+- `summarizer.js`: makes a second OpenRouter call to summarize raw tool results into a short user-facing sentence
+
+`backend/server.js` was updated so `/chatbot/query` now tries the MCP flow first. If OpenRouter is not configured or the MCP call fails, the old rule-based chatbot flow still runs as fallback.
+
+### How The AI Flow Works
+
+```text
+User prompt in AppChatbot.jsx
+        |
+        v
+POST /chatbot/query
+        |
+        v
+server.js handleChatbotPrompt()
+        |
+        v
+mcpClient.js sends prompt + all tool schemas to OpenRouter
+        |
+        v
+OpenRouter chooses one tool and fills parameters
+        |
+        v
+toolHandlers.js executes the matching backend function
+        |
+        v
+summarizer.js converts raw result into a short answer
+        |
+        v
+Frontend receives { message, items, actions, pendingItems }
+```
+
+Important: OpenRouter only chooses the tool and parameters. Real SAP, HANA, SMTP, and CPI actions still happen only inside this backend. Export, ZIP, and email requests must include package/iFlow, status, and time range first; the chatbot triggers CPI with those filters before generated files should be downloaded or sent. CPI trigger dates are sent as date-only values like `2026-02-01`, so the iFlow can append `T00:00:00` for `FROM_DATE` and `T23:59:59` for `TO_DATE`.
+
+### MCP Tools
+
+The tool registry currently exposes these tools:
+
+| MCP tool | What it does |
+|----------|--------------|
+| `list_packages` | Lists SAP CPI integration packages |
+| `list_artifacts` | Lists iFlows/artifacts for one package or all packages |
+| `get_monitoring_logs` | Fetches CPI monitoring logs with status/range filters |
+| `get_monitoring_overview` | Builds a monitoring dashboard-style summary |
+| `export_monitoring_excel` | Requires package/iFlow, status, and time range; returns a CPI trigger action first so HANA is refreshed before Excel download |
+| `download_payload_zip` | Requires package/iFlow, status, and time range; returns a CPI trigger action first so HANA contains the requested payloads before ZIP download |
+| `download_payload_file` | Returns a single payload download action |
+| `send_monitoring_email` | Requires email plus package/iFlow, status, and time range; triggers CPI first so the emailed Excel is based on refreshed HANA data |
+| `list_jms_queues` | Lists JMS queues, optionally filtered to problem queues |
+| `list_jms_messages` | Lists messages inside one JMS queue |
+| `get_jms_resources` | Gets JMS broker resource/capacity details |
+| `move_jms_message` | Moves one JMS message to another queue |
+| `retry_jms_message` | Retries one failed JMS message |
+| `delete_jms_message` | Deletes one JMS message |
+| `trigger_cpi_flow` | Guides the user to the CPI trigger flow |
+
+### Why This Helps
+
+Before this change, the chatbot depended mostly on keyword rules. That made prompts brittle: small wording changes could select the wrong action, fetch too much data, or miss filters like package names and failed queues.
+
+With the MCP-style flow, OpenRouter sees rich tool descriptions and schemas, so it can map natural language like `show failed JMS queues` or `artifacts in meena_demo package` to the right backend capability with structured parameters.
+
 ## UI Structure
 
 After tenant connection, the user lands on a simple launcher screen in [frontend/src/pages/TenantAccess.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/pages/TenantAccess.jsx) with two cards:
@@ -67,7 +141,7 @@ This UI is used for:
 
 Implemented in [frontend/src/components/AppChatbot.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/components/AppChatbot.jsx) with backend routing in [backend/server.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/server.js).
 
-The chatbot is rule-based and project-aware. It only answers prompts related to the application domain. If the prompt does not contain supported operational keywords, it responds with a not-applicable message.
+The chatbot is now AI-assisted and project-aware. OpenRouter chooses from the backend MCP tool registry, then the backend executes the matching tool. The older rule-based dispatcher is still kept as a fallback when AI is unavailable.
 
 Supported prompt areas:
 
@@ -86,6 +160,7 @@ Supported prompt areas:
 - JMS move
 - JMS retry
 - JMS delete
+- single payload download
 
 Example prompts:
 
@@ -93,6 +168,8 @@ Example prompts:
 past hour error messages
 show past hour error messages
 show JMS queues
+show failed JMS queues
+show artifacts inside meena_demo package
 show messages in queue JMS_Queue_100
 show JMS resources
 move ID:10.147.158.688a3119dc16a96700:180 from JMS_Queue_100_DLQ to JMS_Queue_100
@@ -109,7 +186,7 @@ Follow-up behavior:
 
 - If the user asks for a count, such as `past hour error messages`, the chatbot gives the count and asks whether to show the rows.
 - If the user replies `yes`, `show`, or `list`, the chatbot lists the pending result set.
-- If the prompt is outside the supported application keywords, the chatbot returns `Not applicable question`.
+- If AI is unavailable, the backend falls back to the older rule-based prompt handling.
 
 ## Current Frontend Runtime Config
 
@@ -206,7 +283,7 @@ Response includes:
 
 #### `POST /chatbot/query`
 
-Processes a prompt and dispatches it to the same backend capabilities used by the manual UI.
+Processes a prompt through the MCP tool-calling flow and dispatches it to the same backend capabilities used by the manual UI. If AI is unavailable, the rule-based dispatcher is used as fallback.
 
 Request body:
 
@@ -254,6 +331,13 @@ Supported backend dispatch:
 - JMS move execution
 - JMS retry execution
 - JMS delete execution
+
+AI/MCP implementation files:
+
+- [backend/mcp/toolRegistry.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/toolRegistry.js)
+- [backend/mcp/toolHandlers.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/toolHandlers.js)
+- [backend/mcp/mcpClient.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/mcpClient.js)
+- [backend/mcp/summarizer.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/summarizer.js)
 
 ### Message Monitoring Overview APIs
 
@@ -583,13 +667,18 @@ Frontend notes from current code:
    - tenant token
    - tenant base URL
    - stored packages
-4. Backend checks whether the prompt belongs to the supported app domain.
-5. Backend dispatches to monitoring, packages/artifacts, or JMS logic.
-6. Frontend renders:
+4. Backend calls `runMcpChat` from `backend/mcp/mcpClient.js`.
+5. OpenRouter receives the prompt plus the 15 tool schemas.
+6. OpenRouter returns a selected tool and structured arguments.
+7. `toolHandlers.js` executes the selected operation using existing `server.js` functions.
+8. `summarizer.js` turns the raw result into a concise answer.
+9. Frontend renders:
    - text answer
    - matching rows
    - follow-up list results
    - download/action buttons
+
+If OpenRouter is not configured or the MCP flow fails, `server.js` falls back to the old rule-based chatbot logic.
 
 ## Environment Variables
 
@@ -631,6 +720,26 @@ Optional:
 
 - `SMTP_FROM`
 
+### Required for AI/MCP Chatbot
+
+- `OPENAI_API_KEY` or `AI_INTENT_API_KEY`
+- `AI_INTENT_MODEL`
+- `AI_INTENT_APP_URL`
+- `AI_INTENT_APP_NAME`
+
+Example:
+
+```env
+OPENAI_API_KEY=your-openrouter-key
+AI_INTENT_MODEL=nex-agi/nex-n2-pro:free
+AI_INTENT_APP_URL=http://localhost:5173
+AI_INTENT_APP_NAME=Tenant Access
+```
+
+Optional:
+
+- `AI_SUMMARIZER_MODEL`
+
 ## Local Development
 
 ### Backend
@@ -671,7 +780,8 @@ npm run build
 - JMS `Delete` is working
 - JMS `Retry` route exists and should be tested against your tenant with failed messages
 - HANA monitoring data is still a core part of the `Message Monitoring Overview` UI
-- Chatbot support is rule-based and limited to project features already available manually
+- Chatbot now uses OpenRouter MCP-style tool calling first, with rule-based fallback
+- Do not commit `.env` or API keys. Rotate the OpenRouter key immediately if it is exposed.
 
 ## Quick Test Flow
 
@@ -693,11 +803,17 @@ npm run build
    - ask `past hour error messages`
    - reply `yes`
    - ask `show JMS queues`
+   - ask `show failed JMS queues`
+   - ask `show artifacts inside meena_demo package`
    - ask `download excel report`
 
 ## Files To Know
 
 - [backend/server.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/server.js)
+- [backend/mcp/toolRegistry.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/toolRegistry.js)
+- [backend/mcp/toolHandlers.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/toolHandlers.js)
+- [backend/mcp/mcpClient.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/mcpClient.js)
+- [backend/mcp/summarizer.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/summarizer.js)
 - [backend/package.json](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/package.json)
 - [frontend/src/App.jsx](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/App.jsx)
 - [frontend/src/config.js](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/config.js)

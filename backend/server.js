@@ -3226,8 +3226,44 @@ const attachChatbotTrace = (response, intent, tenantContext) => ({
   }
 });
 
+const { configureMcpTools, runMcpChat } = require("./mcp/mcpClient");
+
+configureMcpTools({
+  fetchPackages,
+  fetchArtifactsForPackage,
+  fetchArtifactsForPackagesInBatches,
+  fetchTenantMonitoringLogs,
+  getMonitoringOverviewData,
+  getJmsQueueRecords,
+  getJmsMessagesForQueue,
+  getJmsBrokerResource,
+  enrichQueueMessages,
+  moveJmsMessage,
+  retryJmsMessage,
+  deleteJmsMessage,
+  filterProblemJmsQueues,
+  resolvePackageForPrompt
+});
+
 const handleChatbotPrompt = async ({ prompt, token, baseUrl, packages }) => {
   const tenantContext = createChatbotTenantContext({ token, baseUrl, packages });
+  const hasAiKey = Boolean(process.env.OPENAI_API_KEY || process.env.AI_INTENT_API_KEY);
+
+  if (hasAiKey) {
+    try {
+      const mcpResponse = await runMcpChat({ prompt, tenantContext });
+      return {
+        ...mcpResponse,
+        tenant: {
+          connected: tenantContext.hasTenantConnection,
+          tenantId: tenantContext.tenantId
+        }
+      };
+    } catch (error) {
+      console.warn("MCP chat failed, falling back to rules:", error.response?.data || error.message);
+    }
+  }
+
   const fallbackIntent = classifyChatbotIntent(prompt);
   const aiIntent = await analyzePromptWithAi({ prompt });
   const intent = mergeIntentFallback(aiIntent, fallbackIntent);
@@ -3785,6 +3821,26 @@ app.get("/download-reports-zip", async (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+module.exports = {
+  app,
+  fetchPackages,
+  fetchArtifactsForPackage,
+  fetchArtifactsForPackagesInBatches,
+  fetchTenantMonitoringLogs,
+  getMonitoringOverviewData,
+  getJmsQueueRecords,
+  getJmsMessagesForQueue,
+  getJmsBrokerResource,
+  enrichQueueMessages,
+  moveJmsMessage,
+  retryJmsMessage,
+  deleteJmsMessage,
+  filterProblemJmsQueues,
+  resolvePackageForPrompt
+};
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
