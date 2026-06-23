@@ -111,6 +111,46 @@ const formatItem = (item) => {
     };
   }
 
+  if (item.type === "tenant-overview") {
+    return {
+      title: "Tenant overview",
+      meta: [
+        `Messages: ${toDisplayText(item.messages ?? 0)}`,
+        `Failed: ${toDisplayText(item.failedMessages ?? 0)}`,
+        `Completed: ${toDisplayText(item.completedMessages ?? 0)}`
+      ].join(" | "),
+      detail: [
+        `Packages: ${toDisplayText(item.packages ?? 0)}`,
+        `Artifacts: ${toDisplayText(item.artifacts ?? 0)}`,
+        `Error artifacts: ${toDisplayText(item.errorArtifacts ?? 0)}`
+      ].join(" | ")
+    };
+  }
+
+  if (item.type === "message-status-overview") {
+    return {
+      title: toDisplayText(item.artifactName, "Artifact"),
+      meta: [
+        `Failed: ${toDisplayText(item.FAILED ?? 0)}`,
+        `Retry: ${toDisplayText(item.RETRY ?? 0)}`,
+        `Completed: ${toDisplayText(item.COMPLETED ?? 0)}`
+      ].join(" | "),
+      detail: [
+        `Processing: ${toDisplayText(item.PROCESSING ?? 0)}`,
+        `Escalated: ${toDisplayText(item.ESCALATED ?? 0)}`,
+        `Total: ${toDisplayText(item.total ?? 0)}`
+      ].join(" | ")
+    };
+  }
+
+  if (item.type === "integration-resource") {
+    return {
+      title: toDisplayText(item.Name || item.Id || item.NameId || item.Alias || item.resource, item.resource || "Resource"),
+      meta: toDisplayText(item.Type || item.Kind || item.Status || item.ModifiedAt || item.CreatedAt),
+      detail: toDisplayText(item.Description || item.Value || item.Url || item.User || item.PackageId)
+    };
+  }
+
   return {
     title: toDisplayText(item.title || item.name, "Item"),
     meta: toDisplayText(item.status),
@@ -205,7 +245,7 @@ const AppChatbot = () => {
   const [messages, setMessages] = useState([
     {
       role: "bot",
-      text: "Hi, I can check tenant errors, monitoring status, JMS queues, resources, move, retry, delete, packages, artifacts, payloads, and exports.",
+      text: "Hi, How can i help you today?",
       items: [],
       actions: []
     }

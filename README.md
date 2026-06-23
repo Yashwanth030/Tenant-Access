@@ -25,7 +25,7 @@ There is no separate MCP server process. The MCP layer lives inside the existing
 
 New files were added under `backend/mcp`:
 
-- `toolRegistry.js`: defines 15 AI-callable tools with names, descriptions, and JSON input schemas
+- `toolRegistry.js`: defines 31 AI-callable tools with names, descriptions, and JSON input schemas
 - `toolHandlers.js`: maps each tool to existing backend functions in `server.js`
 - `mcpClient.js`: sends the user prompt and tool schemas to OpenRouter and receives the selected `tool_call`
 - `summarizer.js`: makes a second OpenRouter call to summarize raw tool results into a short user-facing sentence
@@ -67,10 +67,26 @@ The tool registry currently exposes these tools:
 
 | MCP tool | What it does |
 |----------|--------------|
+| `get_tenant_overview` | Builds a tenant dashboard summary from monitoring, packages, and artifact data |
+| `get_message_status_overview` | Groups message processing status counts by artifact/iFlow |
+| `get_monitoring_logs` | Fetches CPI monitoring logs with all status and time-range filters |
+| `get_monitoring_overview` | Builds a monitoring dashboard-style summary |
+| `get_integration_content` | Lists integration content/artifacts with runtime or design status filters |
 | `list_packages` | Lists SAP CPI integration packages |
 | `list_artifacts` | Lists iFlows/artifacts for one package or all packages |
-| `get_monitoring_logs` | Fetches CPI monitoring logs with status/range filters |
-| `get_monitoring_overview` | Builds a monitoring dashboard-style summary |
+| `get_security_materials` | Looks up security materials/credentials if the tenant exposes the API |
+| `get_keystores` | Looks up keystore/certificate entries if the tenant exposes the API |
+| `get_pgp_keys` | Looks up PGP keys if the tenant exposes the API |
+| `get_access_policies` | Looks up access policies if the tenant exposes the API |
+| `get_user_roles` | Looks up user roles if the tenant exposes the API |
+| `get_data_stores` | Looks up data stores or data store entries if the tenant exposes the API |
+| `get_variables` | Looks up tenant/global variables if the tenant exposes the API |
+| `get_number_ranges` | Looks up number ranges if the tenant exposes the API |
+| `get_partner_directory` | Looks up partner directory entries if the tenant exposes the API |
+| `get_message_locks` | Looks up message and designtime artifact locks if the tenant exposes the API |
+| `get_system_logs` | Looks up system log files if the tenant exposes the API |
+| `get_usage_details` | Looks up message usage/current month usage if the tenant exposes the API |
+| `get_connectivity_tests` | Looks up connectivity tests if the tenant exposes the API |
 | `export_monitoring_excel` | Requires package/iFlow, status, and time range; returns a CPI trigger action first so HANA is refreshed before Excel download |
 | `download_payload_zip` | Requires package/iFlow, status, and time range; returns a CPI trigger action first so HANA contains the requested payloads before ZIP download |
 | `download_payload_file` | Returns a single payload download action |
@@ -668,7 +684,7 @@ Frontend notes from current code:
    - tenant base URL
    - stored packages
 4. Backend calls `runMcpChat` from `backend/mcp/mcpClient.js`.
-5. OpenRouter receives the prompt plus the 15 tool schemas.
+5. OpenRouter receives the prompt plus the 31 tool schemas.
 6. OpenRouter returns a selected tool and structured arguments.
 7. `toolHandlers.js` executes the selected operation using existing `server.js` functions.
 8. `summarizer.js` turns the raw result into a concise answer.
