@@ -98,12 +98,21 @@ const filterRowsByText = (rows, filters = []) => {
   });
 };
 
-const fetchCandidateResource = async ({ token, baseUrl, resourceNames, queryParams, textFilters = [] }) => {
+const fetchCandidateResource = async ({
+  token,
+  baseUrl,
+  resourceNames,
+  queryParams,
+  textFilters = [],
+  preferNonEmpty = false,
+  emptyMessage = ""
+}) => {
   const tenantError = requireTenantConnection({ token, baseUrl });
   if (tenantError) return tenantError;
 
   const apiBases = buildApiBaseCandidates(baseUrl);
   const attempts = [];
+  let emptySuccess = null;
 
   for (const apiBase of apiBases) {
     for (const resourceName of resourceNames) {
@@ -114,11 +123,18 @@ const fetchCandidateResource = async ({ token, baseUrl, resourceNames, queryPara
           timeout: 30000
         });
         const rows = filterRowsByText(unwrapODataResults(response.data), textFilters);
-        return {
+        const result = {
           items: rows.slice(0, 25).map((row) => ({ type: "integration-resource", resource: resourceName, ...row })),
           pendingItems: rows.slice(25).map((row) => ({ type: "integration-resource", resource: resourceName, ...row })),
           rawData: { resource: resourceName, total: rows.length, sample: rows.slice(0, 5) }
         };
+
+        if (!preferNonEmpty || rows.length > 0) {
+          return result;
+        }
+
+        emptySuccess ||= result;
+        attempts.push({ resourceName, status: response.status, detail: "Returned 0 rows." });
       } catch (error) {
         attempts.push({
           resourceName,
@@ -127,6 +143,17 @@ const fetchCandidateResource = async ({ token, baseUrl, resourceNames, queryPara
         });
       }
     }
+  }
+
+  if (emptySuccess) {
+    return {
+      ...emptySuccess,
+      message: emptyMessage || emptySuccess.message,
+      rawData: {
+        ...emptySuccess.rawData,
+        attemptedResources: attempts.slice(0, 12)
+      }
+    };
   }
 
   return {
@@ -625,7 +652,11 @@ const TOOL_HANDLERS = {
       token: tenantContext.token,
       baseUrl: tenantContext.baseUrl,
       resourceNames: ["PGPKeys", "PgpKeys", "PublicPGPKeys", "PrivatePGPKeys"],
-      textFilters: [params?.keyName]
+      queryParams: { $format: "json" },
+      textFilters: [params?.keyName],
+      preferNonEmpty: true,
+      emptyMessage:
+        "The tenant API endpoints I can access returned 0 PGP keys. The cockpit may be reading a keyring-specific Manage PGP Keys service instead."
     }),
 
   get_access_policies: async (params, tenantContext) =>

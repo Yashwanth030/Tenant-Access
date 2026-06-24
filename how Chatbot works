@@ -1,0 +1,138 @@
+When you type “get me JMS queues”, it works like this technically:
+Frontend sends prompt
+In [AppChatbot.jsx (line 267)](C:/Users/yashwanth.gr/Desktop/Tenant-Access/frontend/src/components/AppChatbot.jsx:267), sendPrompt() sends a POST request to:
+POST /chatbot/query
+Body contains:
+{
+  "prompt": "get me jms queues",
+  "token": "...tenant bearer token from localStorage...",
+  "baseUrl": "...tenant baseUrl from localStorage...",
+  "packages": [...]
+}
+Backend receives request
+In [server.js (line 3354)](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/server.js:3354), route:
+app.post("/chatbot/query", async (req, res) => { ... })
+It cleans baseUrl, then calls:
+handleChatbotPrompt({ prompt, token, baseUrl, packages })
+Tenant context is built
+Inside [server.js (line 3248)](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/server.js:3248), handleChatbotPrompt() calls:
+createChatbotTenantContext({ token, baseUrl, packages })
+That creates:
+{
+  token,
+  baseUrl,
+  tenantId,
+  packages,
+  hasTenantConnection
+}
+AI/MCP path is used
+If OPENAI_API_KEY or AI_INTENT_API_KEY exists, backend calls:
+runMcpChat({ prompt, tenantContext })
+This is in [mcpClient.js (line 64)](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/mcpClient.js:64).
+Tool list is sent to OpenRouter
+runMcpChat() builds messages and tools:
+const tools = getMcpToolsForOpenRouter();
+The tool definition for JMS queues is in [toolRegistry.js (line 474)](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/toolRegistry.js:474):
+name: "list_jms_queues"
+description: "List JMS queues in the tenant..."
+So OpenRouter sees that get me jms queues matches the tool list_jms_queues.
+AI chooses the tool
+OpenRouter returns something like:
+{
+  "tool_calls": [
+    {
+      "function": {
+        "name": "list_jms_queues",
+        "arguments": "{}"
+      }
+    }
+  ]
+}
+Then runMcpChat() extracts:
+const toolName = toolCall.function?.name;
+const toolParams = parseToolArguments(toolCall);
+Backend executes the real tool
+Still in [mcpClient.js (line 111)](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/mcpClient.js:111), it calls:
+executeMcpTool(toolName, toolParams, tenantContext)
+That reaches the handler in [toolHandlers.js (line 777)](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/mcp/toolHandlers.js:777):
+list_jms_queues: async (params, tenantContext) => { ... }
+JMS handler checks tenant connection
+It first calls:
+requireTenantConnection(tenantContext)
+If token/baseUrl is missing, it returns:
+Connect a tenant first...
+If connected, it continues.
+Actual SAP API call happens
+list_jms_queues calls:
+getJmsQueueRecords(tenantContext.baseUrl, tenantContext.token)
+That function is in [server.js (line 1852)](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/server.js:1852).
+It builds possible tenant base URLs using:
+buildBaseUrlCandidates(baseUrl)
+Then calls SAP:
+GET {candidate}/api/v1/Queues?$format=json&$top=500
+Authorization: Bearer <token>
+SAP response is normalized
+   getJmsQueueRecords() passes the SAP response through:
+unwrapODataResults(response.data)
+mapQueueRecord(...)
+mapQueueRecord() is in [server.js (line 939)](C:/Users/yashwanth.gr/Desktop/Tenant-Access/backend/server.js:939). It converts SAP fields into app fields like:
+{
+  id,
+  key,
+  name,
+  accessType,
+  usage,
+  state,
+  entries
+}
+Then queues are sorted and duplicate queue names are removed.
+Tool returns result
+   Back in list_jms_queues, it returns:
+{
+  items: filtered.map(queue => ({ type: "jms-queue", ...queue })),
+  rawData: {
+    total: queues.length,
+    returned: filtered.length,
+    healthFilter: "all"
+  }
+}
+If you asked “failed JMS queues” or “DLQ queues”, it uses:
+filterProblemJmsQueues(queues)
+Summary message is generated
+   runMcpChat() then calls:
+summarizeToolResult({ prompt, toolName, rawData })
+That creates the sentence like:
+Found 12 JMS queue(s).
+Frontend displays it
+   Backend responds to /chatbot/query with:
+{
+  "message": "...",
+  "items": [...queues...],
+  "actions": [],
+  "debug": {
+    "tool": "list_jms_queues",
+    "model": "...",
+    "params": {}
+  }
+}
+Frontend receives this and adds a bot message with queue items.
+Short function chain
+AppChatbot.sendPrompt()
+  -> POST /chatbot/query
+    -> handleChatbotPrompt()
+      -> createChatbotTenantContext()
+      -> runMcpChat()
+        -> getMcpToolsForOpenRouter()
+        -> callOpenRouterWithTools()
+        -> parseToolArguments()
+        -> executeMcpTool("list_jms_queues")
+          -> TOOL_HANDLERS.list_jms_queues()
+            -> requireTenantConnection()
+            -> getJmsQueueRecords()
+              -> buildBaseUrlCandidates()
+              -> axios.get("/api/v1/Queues")
+              -> unwrapODataResults()
+              -> mapQueueRecord()
+        -> summarizeToolResult()
+    -> frontend renders message/items
+There is also a fallback path if AI/MCP fails: handleChatbotPrompt() falls back to classifyChatbotIntent(), analyzePromptWithAi(), mergeIntentFallback(), and then executeTenantChatTool(). For JMS queues, that fallback still eventually calls getJmsQueueRecords().

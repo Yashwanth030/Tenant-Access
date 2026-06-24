@@ -1,0 +1,19 @@
+{
+  "name": "sap-cpi-tenant-access-mcp-server",
+  "version": "0.1.0",
+  "description": "Standalone MCP server for Tenant Access SAP CPI tools.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "axios": "^1.13.6",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
