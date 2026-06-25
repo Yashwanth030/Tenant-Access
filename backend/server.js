@@ -2582,7 +2582,7 @@ const mapTenantMonitoringLog = (message, index) => ({
 const toODataDateTime = (timeMs) => {
   const date = new Date(timeMs);
   const pad = (value) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}T${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
 };
 
 const fetchTenantMonitoringLogs = async ({ baseUrl, token, prompt }) => {
@@ -3227,6 +3227,8 @@ const attachChatbotTrace = (response, intent, tenantContext) => ({
 });
 
 const { configureMcpTools, runMcpChat } = require("./mcp/mcpClient");
+const { executeMcpTool } = require("./mcp/toolHandlers");
+const { MCP_TOOLS } = require("./mcp/toolRegistry");
 
 configureMcpTools({
   fetchPackages,
@@ -3371,6 +3373,50 @@ app.post("/chatbot/query", async (req, res) => {
       message: `I could not complete that tenant action. ${typeof detail === "string" ? detail : JSON.stringify(detail)}`,
       items: [],
       actions: []
+    });
+  }
+});
+
+app.post("/chatbot/tools/execute", async (req, res) => {
+  let { toolName, params, token, baseUrl, packages } = req.body || {};
+  baseUrl = cleanUrl(baseUrl);
+
+  const allowedTools = new Set(MCP_TOOLS.map((tool) => tool.name));
+  if (!toolName || !allowedTools.has(toolName)) {
+    return res.status(400).json({
+      message: "toolName is required and must be one of the registered MCP tools.",
+      allowedTools: [...allowedTools]
+    });
+  }
+
+  if (!token || !baseUrl) {
+    return res.status(400).json({
+      message: "token and baseUrl are required. Connect a tenant first."
+    });
+  }
+
+  try {
+    const tenantContext = createChatbotTenantContext({
+      token,
+      baseUrl,
+      packages: Array.isArray(packages) ? packages : []
+    });
+    const result = await executeMcpTool(toolName, params || {}, tenantContext);
+
+    return res.json({
+      toolName,
+      ...result,
+      tenant: {
+        connected: tenantContext.hasTenantConnection,
+        tenantId: tenantContext.tenantId
+      }
+    });
+  } catch (error) {
+    const detail = error.response?.data || error.message;
+    console.error(`chatbot/tools/execute ${toolName} error:`, detail);
+    return res.status(500).json({
+      message: `Tool execution failed for ${toolName}.`,
+      detail: typeof detail === "string" ? detail : JSON.stringify(detail)
     });
   }
 });

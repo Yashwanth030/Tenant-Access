@@ -1,4 +1,6 @@
 const axios = require("axios");
+const { getResourceConfig } = require("../sap/resourceRegistry");
+const { fetchODataResource, filterRowsByText } = require("../sap/tenantApiClient");
 
 let deps = null;
 
@@ -34,135 +36,34 @@ const buildMonitoringPrompt = ({ status = "", range = "", timeRange = "", output
 
 const cleanUrl = (url) => String(url || "").trim().replace(/\/+$/, "");
 
-const tenantHeaders = (token) => ({
-  Authorization: `Bearer ${token}`,
-  Accept: "application/json"
-});
-
-const unwrapODataResults = (payload) => {
-  if (Array.isArray(payload?.d?.results)) return payload.d.results;
-  if (Array.isArray(payload?.d)) return payload.d;
-  if (Array.isArray(payload?.value)) return payload.value;
-  if (Array.isArray(payload?.results)) return payload.results;
-  if (Array.isArray(payload)) return payload;
-  if (payload?.d && typeof payload.d === "object") return [payload.d];
-  if (payload && typeof payload === "object") return [payload];
-  return [];
-};
-
-const buildApiBaseCandidates = (baseUrl) => {
-  const cleanedBaseUrl = cleanUrl(baseUrl);
-  if (!cleanedBaseUrl) return [];
-
-  const candidates = [];
-
-  try {
-    const url = new URL(cleanedBaseUrl);
-    candidates.push(`${url.origin}/api/v1`);
-
-    const parts = url.hostname.split(".");
-    if (parts.length > 2 && parts[1] !== "integrationsuite") {
-      const integrationSuiteParts = [...parts];
-      integrationSuiteParts[1] = "integrationsuite";
-      candidates.push(`${url.protocol}//${integrationSuiteParts.join(".")}/api/v1`);
-    }
-
-    if (url.hostname.includes("-rt.cfapps.")) {
-      candidates.push(`${url.protocol}//${url.hostname.replace("-rt.cfapps.", ".cfapps.")}/api/v1`);
-    }
-  } catch {
-    candidates.push(cleanedBaseUrl);
-  }
-
-  return [...new Set(candidates.map(cleanUrl).filter(Boolean))];
-};
-
-const buildQueryString = (params = {}) => {
-  const searchParams = new URLSearchParams();
-  Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && String(value).trim() !== "") {
-      searchParams.append(key, value);
-    }
-  });
-  const query = searchParams.toString();
-  return query ? `?${query}` : "";
-};
-
-const filterRowsByText = (rows, filters = []) => {
-  const activeFilters = filters.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
-  if (activeFilters.length === 0) return rows;
-
-  return rows.filter((row) => {
-    const searchable = JSON.stringify(row).toLowerCase();
-    return activeFilters.every((filter) => searchable.includes(filter));
-  });
-};
-
-const fetchCandidateResource = async ({
-  token,
-  baseUrl,
-  resourceNames,
-  queryParams,
-  textFilters = [],
-  preferNonEmpty = false,
-  emptyMessage = ""
-}) => {
-  const tenantError = requireTenantConnection({ token, baseUrl });
+const fetchRegisteredResource = async (toolName, params, tenantContext, overrides = {}) => {
+  const tenantError = requireTenantConnection(tenantContext);
   if (tenantError) return tenantError;
 
-  const apiBases = buildApiBaseCandidates(baseUrl);
-  const attempts = [];
-  let emptySuccess = null;
-
-  for (const apiBase of apiBases) {
-    for (const resourceName of resourceNames) {
-      const endpoint = `${apiBase}/${resourceName}${buildQueryString(queryParams)}`;
-      try {
-        const response = await axios.get(endpoint, {
-          headers: tenantHeaders(token),
-          timeout: 30000
-        });
-        const rows = filterRowsByText(unwrapODataResults(response.data), textFilters);
-        const result = {
-          items: rows.slice(0, 25).map((row) => ({ type: "integration-resource", resource: resourceName, ...row })),
-          pendingItems: rows.slice(25).map((row) => ({ type: "integration-resource", resource: resourceName, ...row })),
-          rawData: { resource: resourceName, total: rows.length, sample: rows.slice(0, 5) }
-        };
-
-        if (!preferNonEmpty || rows.length > 0) {
-          return result;
-        }
-
-        emptySuccess ||= result;
-        attempts.push({ resourceName, status: response.status, detail: "Returned 0 rows." });
-      } catch (error) {
-        attempts.push({
-          resourceName,
-          status: error.response?.status,
-          detail: error.response?.data?.error?.message?.value || error.response?.data?.message || error.message
-        });
-      }
-    }
+  const config = getResourceConfig(toolName);
+  if (!config) {
+    return fetchODataResource({
+      token: tenantContext.token,
+      baseUrl: tenantContext.baseUrl,
+      resourceNames: overrides.resources || [],
+      queryParams: overrides.queryParams || {},
+      textFilters: overrides.textFilters || [],
+      preferNonEmpty: overrides.preferNonEmpty,
+      emptyMessage: overrides.emptyMessage,
+      itemType: overrides.itemType || "integration-resource"
+    });
   }
 
-  if (emptySuccess) {
-    return {
-      ...emptySuccess,
-      message: emptyMessage || emptySuccess.message,
-      rawData: {
-        ...emptySuccess.rawData,
-        attemptedResources: attempts.slice(0, 12)
-      }
-    };
-  }
-
-  return {
-    message:
-      "I know this SAP Integration Suite area, but this backend does not have a confirmed API endpoint for it yet on the connected tenant.",
-    items: [],
-    actions: [],
-    rawData: { attemptedResources: attempts.slice(0, 8) }
-  };
+  return fetchODataResource({
+    token: tenantContext.token,
+    baseUrl: tenantContext.baseUrl,
+    resourceNames: overrides.resources || config.resources,
+    queryParams: { ...config.queryParams, ...(overrides.queryParams || {}) },
+    textFilters: overrides.textFilters || [],
+    preferNonEmpty: overrides.preferNonEmpty ?? config.preferNonEmpty,
+    emptyMessage: overrides.emptyMessage || config.emptyMessage,
+    itemType: overrides.itemType || config.itemType
+  });
 };
 
 const groupReportsByArtifact = (reports) => {
@@ -268,14 +169,14 @@ const normalizeStatusValue = (value) => {
 const validateMonitoringSelection = (params = {}, tenantContext = {}, extraRequired = []) => {
   const packageName = String(params.packageName || params.packageId || "").trim();
   const iflowName = String(params.iflowName || params.artifactName || "").trim();
-  const status = String(params.status || "").trim();
-  const range = getRangeForTime(params.range, params.fromDate, params.toDate);
+  const statusRaw = String(params.status || "").trim();
+  const range = getRangeForTime(params.range || params.timeRange, params.fromDate, params.toDate);
   const missing = [];
 
   if (!tenantContext.baseUrl) missing.push("tenant base URL");
   if (!packageName) missing.push("package");
   if (!iflowName) missing.push("iFlow/artifact or All");
-  if (!status) missing.push("status or All");
+  if (!statusRaw) missing.push("status or All");
   if (!range.fromDate || !range.toDate) missing.push("time range");
 
   extraRequired.forEach((field) => {
@@ -294,12 +195,12 @@ const validateMonitoringSelection = (params = {}, tenantContext = {}, extraRequi
   return {
     packageName,
     iflowName,
-    status,
+    status: statusRaw,
     range,
     triggerPayload: {
       BASE_URL: tenantContext.baseUrl,
       IFLOW_NAME: normalizeAllValue(iflowName),
-      STATUS: normalizeStatusValue(status),
+      STATUS: normalizeStatusValue(statusRaw),
       FROM_DATE: range.fromDate,
       TO_DATE: range.toDate
     }
@@ -632,114 +533,75 @@ const TOOL_HANDLERS = {
   },
 
   get_security_materials: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["SecurityMaterials", "SecurityMaterial", "UserCredentials", "OAuth2ClientCredentials"],
+    fetchRegisteredResource("get_security_materials", params, tenantContext, {
       textFilters: [params?.name]
     }),
 
   get_keystores: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["KeystoreEntries", "Keystores", "KeyStoreEntries", "CertificateUserMappings"],
+    fetchRegisteredResource("get_keystores", params, tenantContext, {
       textFilters: [params?.alias]
     }),
 
   get_pgp_keys: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["PGPKeys", "PgpKeys", "PublicPGPKeys", "PrivatePGPKeys"],
-      queryParams: { $format: "json" },
-      textFilters: [params?.keyName],
-      preferNonEmpty: true,
-      emptyMessage:
-        "The tenant API endpoints I can access returned 0 PGP keys. The cockpit may be reading a keyring-specific Manage PGP Keys service instead."
+    fetchRegisteredResource("get_pgp_keys", params, tenantContext, {
+      textFilters: [params?.keyName]
     }),
 
   get_access_policies: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["AccessPolicies", "AccessPolicyArtifacts"],
+    fetchRegisteredResource("get_access_policies", params, tenantContext, {
       textFilters: [params?.name]
     }),
 
   get_user_roles: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["UserRoles", "UserRoleArtifacts", "Roles"],
+    fetchRegisteredResource("get_user_roles", params, tenantContext, {
       textFilters: [params?.roleName]
     }),
 
   get_data_stores: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["DataStores", "DataStoreEntries", "DataStore"],
+    fetchRegisteredResource("get_data_stores", params, tenantContext, {
+      resources: params?.entryId ? ["DataStoreEntries"] : undefined,
       textFilters: [params?.dataStoreName, params?.entryId]
     }),
 
   get_variables: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["Variables", "GlobalVariables", "VariableArtifacts"],
+    fetchRegisteredResource("get_variables", params, tenantContext, {
       textFilters: [params?.variableName]
     }),
 
   get_number_ranges: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["NumberRanges", "NumberRangeObjects"],
+    fetchRegisteredResource("get_number_ranges", params, tenantContext, {
       textFilters: [params?.numberRangeName]
     }),
 
   get_partner_directory: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["PartnerDirectoryEntries", "PartnerDirectory", "Partners"],
+    fetchRegisteredResource("get_partner_directory", params, tenantContext, {
       textFilters: [params?.partnerId]
     }),
 
-  get_message_locks: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames:
-        params?.lockType === "designtime"
-          ? ["DesigntimeArtifactLocks", "ArtifactLocks"]
-          : params?.lockType === "message"
-            ? ["MessageLocks"]
-            : ["MessageLocks", "DesigntimeArtifactLocks", "ArtifactLocks"]
-    }),
+  get_message_locks: async (params, tenantContext) => {
+    const lockType = String(params?.lockType || "").trim().toLowerCase();
+    const resources =
+      lockType === "designtime"
+        ? ["DesigntimeArtifactLocks"]
+        : lockType === "message"
+          ? ["MessageLocks"]
+          : undefined;
+
+    return fetchRegisteredResource("get_message_locks", params, tenantContext, { resources });
+  },
 
   get_system_logs: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["SystemLogFiles", "SystemLogs", "LogFiles"],
+    fetchRegisteredResource("get_system_logs", params, tenantContext, {
       textFilters: [params?.logName]
     }),
 
   get_usage_details: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["UsageDetails", "MessageUsage", "Usage"],
+    fetchRegisteredResource("get_usage_details", params, tenantContext, {
       textFilters: [params?.period]
     }),
 
   get_connectivity_tests: async (params, tenantContext) =>
-    fetchCandidateResource({
-      token: tenantContext.token,
-      baseUrl: tenantContext.baseUrl,
-      resourceNames: ["ConnectivityTests", "ConnectionTests"],
+    fetchRegisteredResource("get_connectivity_tests", params, tenantContext, {
       textFilters: [params?.testName]
     }),
 
