@@ -111,11 +111,11 @@ const buildPrompt = (toolName, args = {}) => {
 
 const callChatbotBridge = async (toolName, args = {}) => {
   const tenantContext = await getTenantContext();
-  const prompt = buildPrompt(toolName, args);
   const response = await axios.post(
-    `${getBackendUrl()}/chatbot/query`,
+    `${getBackendUrl()}/chatbot/tools/execute`,
     {
-      prompt,
+      toolName,
+      params: args,
       token: tenantContext.token,
       baseUrl: tenantContext.baseUrl,
       packages: tenantContext.packages || []
@@ -123,10 +123,7 @@ const callChatbotBridge = async (toolName, args = {}) => {
     { timeout: 120000 }
   );
 
-  return {
-    prompt,
-    data: response.data
-  };
+  return response.data;
 };
 
 const formatItem = (item) => {
@@ -147,13 +144,16 @@ const formatItem = (item) => {
   return `- ${JSON.stringify(item)}`;
 };
 
-const formatToolResponse = ({ prompt, data }) => {
+const formatToolResponse = (toolName, args, data) => {
   const message = data?.message || "Tool completed.";
   const items = Array.isArray(data?.items) ? data.items : [];
   const pendingItems = Array.isArray(data?.pendingItems) ? data.pendingItems : [];
-  const debugTool = data?.debug?.tool ? `\nBackend tool: ${data.debug.tool}` : "";
+  const debugTool = data?.debug?.tool || data?.toolName || toolName;
 
-  const lines = [`Prompt sent to backend bridge: ${prompt}`, message + debugTool];
+  const lines = [
+    `Executed tool: ${toolName} with arguments: ${JSON.stringify(args)}`,
+    message + `\nBackend tool: ${debugTool}`
+  ];
 
   if (items.length > 0) {
     lines.push("", `Returned ${items.length} item(s):`);
@@ -171,7 +171,7 @@ export const executeTool = async (toolName, args = {}) => {
   try {
     const result = await callChatbotBridge(toolName, args);
     return {
-      content: [{ type: "text", text: formatToolResponse(result) }]
+      content: [{ type: "text", text: formatToolResponse(toolName, args, result) }]
     };
   } catch (error) {
     const detail = error.response?.data?.message || error.response?.data?.detail || error.message;

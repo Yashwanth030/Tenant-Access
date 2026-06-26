@@ -392,8 +392,8 @@ const StatusOverview = () => {
         BASE_URL: resolvedBaseUrl || baseUrl || "",
         IFLOW_NAME: selectedArtifact === "All" ? "" : selectedArtifact,
         STATUS: status === "All" ? "" : status,
-        FROM_DATE: toCpiDateValue(range.fromDate),
-        TO_DATE: toCpiDateValue(range.toDate)
+        FROM_DATE: range.fromDate,
+        TO_DATE: timeRange === "Custom" && range.toDate ? range.toDate.replace(/T\d{2}:\d{2}:\d{2}$/, "T23:59:59") : range.toDate
       };
 
       const response = await fetch(`${API_BASE_URL}/trigger-cpi`, {

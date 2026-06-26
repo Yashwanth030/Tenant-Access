@@ -62,6 +62,22 @@ const toDisplayText = (value, fallback = "") => {
   }
 };
 
+
+const formatDate = (value) => {
+  if (!value) return "";
+  if (typeof value === "string") {
+    const match = value.match(/\/Date\((\d+)\)\//);
+    if (match) {
+      return new Date(parseInt(match[1])).toLocaleString("en-IN", { hour12: false });
+    }
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isNaN(parsed)) {
+    return new Date(parsed).toLocaleString("en-IN", { hour12: false });
+  }
+  return String(value);
+};
+
 const formatItem = (item) => {
   if (item.type === "report") {
     return {
@@ -92,6 +108,177 @@ const formatItem = (item) => {
       title: toDisplayText(item.Name || item.Id, "Artifact"),
       meta: [item.Type, item.Status].map((value) => toDisplayText(value)).filter(Boolean).join(" | "),
       detail: toDisplayText(item.PackageId || item.PackageName)
+    };
+  }
+
+  if (item.type === "pgp-key") {
+    const validUntil = item.ValidityEnd || item.Validity || item.ValidUntil;
+    return {
+      title: toDisplayText(item.Alias || item.KeyId || "PGP Key"),
+      meta: [
+        item.KeyType ? `Type: ${item.KeyType}` : "",
+        item.Owner ? `Owner: ${item.Owner}` : "",
+        item.KeyId ? `Key ID: ${item.KeyId}` : ""
+      ].filter(Boolean).join(" | "),
+      detail: [
+        validUntil ? `Valid Until: ${formatDate(validUntil)}` : "",
+        item.ValidityStart ? `Valid From: ${formatDate(item.ValidityStart)}` : "",
+        item.CreatedBy ? `Created By: ${item.CreatedBy}` : ""
+      ].filter(Boolean).join(" \n ")
+    };
+  }
+
+  if (item.type === "keystore-entry") {
+    const validUntil = item.ValidityEnd || item.Validity || item.ValidUntil;
+    const validFrom = item.ValidityStart || item.ValidFrom;
+    return {
+      title: toDisplayText(item.Alias || "Keystore Entry"),
+      meta: [
+        item.Type ? `Type: ${item.Type}` : "",
+        item.KeySize ? `Size: ${item.KeySize} bits` : "",
+        validUntil ? `Valid Until: ${formatDate(validUntil)}` : ""
+      ].filter(Boolean).join(" | "),
+      detail: [
+        item.Owner ? `Owner: ${item.Owner}` : "",
+        item.Issuer ? `Issuer: ${item.Issuer}` : "",
+        item.Subject ? `Subject: ${item.Subject}` : "",
+        validFrom ? `Valid From: ${formatDate(validFrom)}` : ""
+      ].filter(Boolean).join(" \n ")
+    };
+  }
+
+  if (item.type === "security-material") {
+    const lastMod = item.LastModifiedTime || item.ModifiedAt || item.LastModifiedBy;
+    return {
+      title: toDisplayText(item.Name || "Security Material"),
+      meta: [
+        item.Type ? `Type: ${item.Type}` : "",
+        item.User ? `User: ${item.User}` : ""
+      ].filter(Boolean).join(" | "),
+      detail: [
+        item.Description ? `Description: ${item.Description}` : "",
+        lastMod ? `Modified: ${formatDate(lastMod)}` : ""
+      ].filter(Boolean).join(" \n ")
+    };
+  }
+
+  if (item.type === "access-policy") {
+    return {
+      title: toDisplayText(item.Id || "Access Policy"),
+      meta: [
+        item.UserRole ? `Role: ${item.UserRole}` : "",
+        item.ArtifactId ? `Artifact: ${item.ArtifactId}` : ""
+      ].filter(Boolean).join(" | "),
+      detail: toDisplayText(item.Description)
+    };
+  }
+
+  if (item.type === "user-role") {
+    return {
+      title: toDisplayText(item.RoleName || "User Role"),
+      meta: "",
+      detail: toDisplayText(item.Description)
+    };
+  }
+
+  if (item.type === "data-store") {
+    const isEntry = item.Id !== undefined;
+    const expiry = item.RetainUntil || item.ExpiresAt || item.DueAt;
+    const created = item.CreatedAt || item.UpdatedAt;
+    return {
+      title: toDisplayText(item.DataStoreName || "Data Store"),
+      meta: [
+        item.Type ? `Type: ${item.Type}` : "",
+        isEntry ? `Entry ID: ${item.Id}` : "",
+        item.Status ? `Status: ${item.Status}` : "",
+        item.NumberOfMessages ? `Messages: ${item.NumberOfMessages}` : ""
+      ].filter(Boolean).join(" | "),
+      detail: [
+        item.IntegrationFlow ? `iFlow/Artifact: ${item.IntegrationFlow}` : "",
+        item.MessageId ? `Message ID: ${item.MessageId}` : "",
+        created ? `Created At: ${formatDate(created)}` : "",
+        expiry ? `Expires/Due: ${formatDate(expiry)}` : ""
+      ].filter(Boolean).join(" \n ")
+    };
+  }
+
+  if (item.type === "variable") {
+    return {
+      title: toDisplayText(item.VariableName || item.Name || "Variable"),
+      meta: [
+        item.Visibility ? `Visibility: ${item.Visibility}` : "",
+        item.IntegrationFlow ? `iFlow: ${item.IntegrationFlow}` : ""
+      ].filter(Boolean).join(" | "),
+      detail: [
+        item.UpdatedAt ? `Updated: ${formatDate(item.UpdatedAt)}` : "",
+        item.RetainUntil ? `Retain Until: ${formatDate(item.RetainUntil)}` : ""
+      ].filter(Boolean).join(" \n ")
+    };
+  }
+
+  if (item.type === "number-range") {
+    return {
+      title: toDisplayText(item.Name || "Number Range"),
+      meta: `Current: ${toDisplayText(item.CurrentValue ?? "-")} / Max: ${toDisplayText(item.MaxValue ?? "-")}`,
+      detail: [
+        item.MinValue ? `Min: ${item.MinValue}` : "",
+        item.Rotate ? `Rotate: ${item.Rotate}` : "",
+        item.Description ? `Description: ${item.Description}` : "",
+        item.DeployedOn ? `Deployed On: ${formatDate(item.DeployedOn)}` : ""
+      ].filter(Boolean).join(" \n ")
+    };
+  }
+
+  if (item.type === "partner-directory-entry") {
+    return {
+      title: toDisplayText(item.Id || "Partner Entry"),
+      meta: [
+        item.Pid ? `Partner ID: ${item.Pid}` : "",
+        item.Type ? `Type: ${item.Type}` : ""
+      ].filter(Boolean).join(" | "),
+      detail: toDisplayText(item.Value)
+    };
+  }
+
+  if (item.type === "message-lock") {
+    return {
+      title: toDisplayText(item.MessageId || "Message Lock"),
+      meta: [
+        item.LockOwner ? `Owner: ${item.LockOwner}` : "",
+        item.ArtifactId ? `Artifact: ${item.ArtifactId}` : ""
+      ].filter(Boolean).join(" | "),
+      detail: item.LockTime ? `Locked At: ${formatDate(item.LockTime)}` : ""
+    };
+  }
+
+  if (item.type === "system-log") {
+    const sizeStr = item.FileSize ? `${(Number(item.FileSize) / 1024).toFixed(2)} KB` : "";
+    return {
+      title: toDisplayText(item.LogFileName || "System Log"),
+      meta: [
+        sizeStr ? `Size: ${sizeStr}` : "",
+        item.Date ? `Date: ${formatDate(item.Date)}` : ""
+      ].filter(Boolean).join(" | "),
+      detail: ""
+    };
+  }
+
+  if (item.type === "usage-detail") {
+    return {
+      title: item.Date ? `Usage on ${formatDate(item.Date)}` : "Usage Detail",
+      meta: item.Count ? `Count: ${item.Count}` : "",
+      detail: toDisplayText(item.Resource)
+    };
+  }
+
+  if (item.type === "connectivity-test") {
+    return {
+      title: `Test to ${toDisplayText(item.Host)}:${toDisplayText(item.Port)}`,
+      meta: [
+        item.Protocol ? `Protocol: ${item.Protocol}` : "",
+        item.Status ? `Status: ${item.Status}` : ""
+      ].filter(Boolean).join(" | "),
+      detail: toDisplayText(item.Message || item.Detail)
     };
   }
 
@@ -161,7 +348,51 @@ const formatItem = (item) => {
 const SearchableChatItems = ({ items }) => {
   const [selectedItem, setSelectedItem] = useState(items[0] || null);
   const itemType = items[0]?.type;
-  const label = itemType === "artifact" ? "Search artifact" : "Search package";
+
+  const getLabel = (type) => {
+    switch (type) {
+      case "artifact": return "Search artifact";
+      case "pgp-key": return "Search PGP key";
+      case "package": return "Search package";
+      case "keystore-entry": return "Search Keystore Entry / Certificate";
+      case "security-material": return "Search Security Material";
+      case "access-policy": return "Search Access Policy";
+      case "user-role": return "Search User Role";
+      case "data-store": return "Search Data Store";
+      case "variable": return "Search Variable";
+      case "number-range": return "Search Number Range";
+      case "partner-directory-entry": return "Search Partner Directory Entry";
+      case "message-lock": return "Search Message Lock";
+      case "system-log": return "Search System Log File";
+      case "usage-detail": return "Search Usage Detail";
+      case "connectivity-test": return "Search Connectivity Test Endpoint";
+      default: return "Search item";
+    }
+  };
+
+  const getPlaceholder = (type) => {
+    switch (type) {
+      case "artifact": return "artifacts";
+      case "pgp-key": return "PGP keys";
+      case "package": return "packages";
+      case "keystore-entry": return "keystore entries";
+      case "security-material": return "security materials";
+      case "access-policy": return "access policies";
+      case "user-role": return "user roles";
+      case "data-store": return "data stores";
+      case "variable": return "variables";
+      case "number-range": return "number ranges";
+      case "partner-directory-entry": return "partner directory entries";
+      case "message-lock": return "message locks";
+      case "system-log": return "system logs";
+      case "usage-detail": return "usage details";
+      case "connectivity-test": return "connectivity tests";
+      default: return "items";
+    }
+  };
+
+  const label = getLabel(itemType);
+  const placeholder = getPlaceholder(itemType);
   const selected = selectedItem ? formatItem(selectedItem) : null;
 
   return (
@@ -176,14 +407,14 @@ const SearchableChatItems = ({ items }) => {
           return [formatted.title, formatted.meta].filter(Boolean).join(" - ");
         }}
         isOptionEqualToValue={(option, value) =>
-          toDisplayText(option.Id || option.Name || option.id || option.title) ===
-          toDisplayText(value.Id || value.Name || value.id || value.title)
+          toDisplayText(option.Id || option.Name || option.id || option.title || option.Alias) ===
+          toDisplayText(value.Id || value.Name || value.id || value.title || value.Alias)
         }
         renderInput={(params) => (
           <TextField
             {...params}
             label={label}
-            placeholder={`Search ${items.length} ${itemType === "artifact" ? "artifacts" : "packages"}`}
+            placeholder={`Search ${items.length} ${placeholder}`}
           />
         )}
       />
@@ -199,7 +430,7 @@ const SearchableChatItems = ({ items }) => {
             </Typography>
           )}
           {selected.detail && (
-            <Typography sx={{ fontSize: 12, color: "#64748b", wordBreak: "break-word" }}>
+            <Typography sx={{ fontSize: 12, color: "#64748b", wordBreak: "break-word", whiteSpace: "pre-wrap" }}>
               {toDisplayText(selected.detail)}
             </Typography>
           )}
@@ -221,7 +452,9 @@ const downloadFromAction = async (action) => {
   link.href = objectUrl;
   link.download = action.label.toLowerCase().includes("excel")
     ? "Monitoring_Overview.xlsx"
-    : "iFlow_Payload_files.zip";
+    : action.label.toLowerCase().includes("payload")
+      ? "datastore_entry_payload.txt"
+      : "iFlow_Payload_files.zip";
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -464,11 +697,19 @@ const AppChatbot = () => {
                   {toDisplayText(message.text)}
                 </Typography>
 
-                {message.items?.length > 0 && ["package", "artifact"].includes(message.items[0]?.type) && (
+                {message.items?.length > 0 && [
+                  "package", "artifact", "pgp-key", "keystore-entry", "security-material",
+                  "access-policy", "user-role", "data-store", "variable", "number-range",
+                  "partner-directory-entry", "message-lock", "system-log", "usage-detail", "connectivity-test"
+                ].includes(message.items[0]?.type) && (
                   <SearchableChatItems items={message.items} />
                 )}
 
-                {message.items?.length > 0 && !["package", "artifact"].includes(message.items[0]?.type) && (
+                {message.items?.length > 0 && ![
+                  "package", "artifact", "pgp-key", "keystore-entry", "security-material",
+                  "access-policy", "user-role", "data-store", "variable", "number-range",
+                  "partner-directory-entry", "message-lock", "system-log", "usage-detail", "connectivity-test"
+                ].includes(message.items[0]?.type) && (
                   <Stack spacing={1} sx={{ mt: 1.25 }}>
                     {message.items.map((item, itemIndex) => {
                       const formatted = formatItem(item);

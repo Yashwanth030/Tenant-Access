@@ -20,7 +20,7 @@ const SAMPLE_PARAMS = {
   get_message_status_overview: { timeRange: "past hour" },
   get_monitoring_logs: { status: "FAILED", range: "past hour", outputMode: "count" },
   get_monitoring_overview: { timeRange: "past hour" },
-  get_integration_content: { runtimeStatus: "All" },
+  get_integration_content: { runtimeStatus: "All", packageName: "REPLACE_PACKAGE" },
   list_packages: {},
   list_artifacts: { packageName: "" },
   get_security_materials: {},
@@ -98,10 +98,19 @@ const run = async () => {
   console.log("Connecting tenant...");
   const session = await connectTenant();
 
+  const samplePackageId = session.packages[0]?.Id || "All";
+  console.log(`Using sample package ID: ${samplePackageId}`);
+
   const results = [];
 
   for (const tool of MCP_TOOLS) {
-    const params = SAMPLE_PARAMS[tool.name] || {};
+    const params = { ...(SAMPLE_PARAMS[tool.name] || {}) };
+    
+    // Dynamically replace placeholder package names or empty packages to avoid mass-fetching 900+ packages
+    if (params.packageName === "" || params.packageName === "REPLACE_PACKAGE") {
+      params.packageName = samplePackageId;
+    }
+
     try {
       const response = await axios.post(
         `${BACKEND_URL}/chatbot/tools/execute`,

@@ -14,58 +14,60 @@ const DEFAULT_QUERY = {
 const RESOURCE_REGISTRY = {
   get_security_materials: {
     resources: ["UserCredentials", "OAuth2ClientCredentials", "SecureParameters"],
-    queryParams: {
-      ...DEFAULT_QUERY,
-      $select: "Name,Kind,User,Description,Type,Id"
-    },
-    itemType: "security-material"
+    queryParams: DEFAULT_QUERY,
+    itemType: "security-material",
+    preferNonEmpty: true
   },
   get_keystores: {
     resources: ["KeystoreEntries", "CertificateUserMappings"],
     queryParams: {
-      ...DEFAULT_QUERY,
-      $select:
-        "Alias,Hexalias,KeyType,ValidNotBefore,ValidNotAfter,Validity,Type,Owner,LastModifiedBy,CreatedBy,Status,SubjectDN,User"
+      keystoreName: "system"
     },
-    itemType: "keystore-entry"
+    itemType: "keystore-entry",
+    preferNonEmpty: true
   },
   get_pgp_keys: {
-    resources: ["PublicKeys", "PGPPublicKeys", "PGPKeys"],
+    resources: ["PgpKeyEntries", "PublicKeys", "PGPPublicKeys", "PGPKeys"],
     queryParams: {
-      ...DEFAULT_QUERY,
-      $select: "UserId,KeyId,KeyID,ValidityState,KeyLength,KeyUsage,KeyCreationDate,KeyExpirationDate,KeyVersion"
+      keyringName: "pubring"
     },
     itemType: "pgp-key",
     preferNonEmpty: true,
     emptyMessage:
-      "No PGP keys were returned from the tenant OData APIs. Your cockpit may use a keyring-specific Manage PGP Keys service that is not exposed on /api/v1."
+      "No PGP keys were found. Please verify that your PGP keys are configured in the SAP Integration Suite cockpit and that your API user has permissions to view them."
   },
   get_access_policies: {
     resources: ["AccessPolicies", "AuthorizationGroups"],
     queryParams: DEFAULT_QUERY,
-    itemType: "access-policy"
+    itemType: "access-policy",
+    preferNonEmpty: true
   },
   get_user_roles: {
     resources: ["UserRoles", "Roles", "CertificateUserMappings"],
     queryParams: DEFAULT_QUERY,
-    itemType: "user-role"
+    itemType: "user-role",
+    preferNonEmpty: true
   },
   get_data_stores: {
     resources: ["DataStores", "DataStoreEntries"],
-    queryParams: DEFAULT_QUERY,
-    itemType: "data-store"
+    queryParams: {
+      $format: "json"
+    },
+    itemType: "data-store",
+    preferNonEmpty: true
   },
   get_variables: {
     resources: ["Variables"],
     queryParams: {
-      ...DEFAULT_QUERY,
-      $select: "Name,Value,DataType,Id,PackageId,ArtifactId"
+      $format: "json"
     },
     itemType: "variable"
   },
   get_number_ranges: {
     resources: ["NumberRanges"],
-    queryParams: DEFAULT_QUERY,
+    queryParams: {
+      $format: "json"
+    },
     itemType: "number-range"
   },
   get_partner_directory: {
@@ -76,32 +78,34 @@ const RESOURCE_REGISTRY = {
   get_message_locks: {
     resources: ["MessageLocks", "DesigntimeArtifactLocks"],
     queryParams: DEFAULT_QUERY,
-    itemType: "message-lock"
+    itemType: "message-lock",
+    preferNonEmpty: true
   },
   get_system_logs: {
     resources: ["SystemLogFiles", "LogFiles"],
     queryParams: DEFAULT_QUERY,
     itemType: "system-log",
+    preferNonEmpty: true,
     emptyMessage:
-      "System log files are often not exposed through tenant OData. Use SAP cockpit or tenant-specific operations APIs if available."
+      "No system logs were found. Please check your SAP Integration Suite cockpit to access the system log files directly."
   },
   get_usage_details: {
     resources: ["UsageDetails", "MessageProcessingStatistics"],
     queryParams: DEFAULT_QUERY,
-    itemType: "usage-detail"
+    itemType: "usage-detail",
+    preferNonEmpty: true
   },
   get_connectivity_tests: {
     resources: ["ConnectivityTests", "ServiceEndpoints"],
     queryParams: DEFAULT_QUERY,
-    itemType: "connectivity-test"
+    itemType: "connectivity-test",
+    preferNonEmpty: true
   },
   get_integration_content: {
     resources: ["IntegrationRuntimeArtifacts", "IntegrationDesigntimeArtifacts"],
-    queryParams: {
-      ...DEFAULT_QUERY,
-      $select: "Id,Name,Version,Type,Status,DeployedBy,DeployedOn,PackageId"
-    },
-    itemType: "integration-artifact"
+    queryParams: DEFAULT_QUERY,
+    itemType: "integration-artifact",
+    preferNonEmpty: true
   }
 };
 

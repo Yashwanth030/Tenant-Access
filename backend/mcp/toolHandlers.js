@@ -1,6 +1,13 @@
 const axios = require("axios");
 const { getResourceConfig } = require("../sap/resourceRegistry");
-const { fetchODataResource, filterRowsByText } = require("../sap/tenantApiClient");
+const { 
+  fetchODataResource, 
+  filterRowsByText,
+  deleteODataResource,
+  updateODataResource,
+  downloadODataResourceStream
+} = require("../sap/tenantApiClient");
+
 
 let deps = null;
 
@@ -192,6 +199,18 @@ const validateMonitoringSelection = (params = {}, tenantContext = {}, extraRequi
     };
   }
 
+  const ensureCpiFromDateTime = (dateStr) => {
+    if (!dateStr) return "";
+    if (dateStr.includes("T")) return dateStr;
+    return `${dateStr}T00:00:00`;
+  };
+
+  const ensureCpiToDateTime = (dateStr) => {
+    if (!dateStr) return "";
+    if (dateStr.includes("T")) return dateStr;
+    return `${dateStr}T23:59:59`;
+  };
+
   return {
     packageName,
     iflowName,
@@ -201,8 +220,8 @@ const validateMonitoringSelection = (params = {}, tenantContext = {}, extraRequi
       BASE_URL: tenantContext.baseUrl,
       IFLOW_NAME: normalizeAllValue(iflowName),
       STATUS: normalizeStatusValue(statusRaw),
-      FROM_DATE: range.fromDate,
-      TO_DATE: range.toDate
+      FROM_DATE: ensureCpiFromDateTime(range.fromDate),
+      TO_DATE: ensureCpiToDateTime(range.toDate)
     }
   };
 };
@@ -293,11 +312,24 @@ const TOOL_HANDLERS = {
       try {
         const packageResult = await fetchPackages(baseUrl, token);
         livePackages = packageResult.packages || [];
-        const artifactResult = await fetchArtifactsForPackagesInBatches(packageResult.apiBaseUrl, token, livePackages);
-        const artifacts = artifactResult.results.flatMap((entry) => entry.artifacts || []);
-        artifactCount = artifacts.length;
-        artifactErrorCount = artifacts.filter((artifact) => /error/i.test(JSON.stringify(artifact))).length;
-        artifactStartedCount = artifacts.filter((artifact) => /started/i.test(JSON.stringify(artifact))).length;
+        
+        // Fast path: fetch all deployed runtime artifacts directly to avoid batch loop timeouts
+        const runtimeRes = await fetchODataResource({
+          token,
+          baseUrl,
+          resourceNames: ["IntegrationRuntimeArtifacts"],
+          queryParams: {
+            $format: "json",
+            $top: "5000",
+            $select: "Id,Status"
+          },
+          itemType: "integration-artifact"
+        });
+        
+        const runtimeArtifacts = runtimeRes.items || [];
+        artifactCount = runtimeArtifacts.length;
+        artifactErrorCount = runtimeArtifacts.filter((art) => /error/i.test(art.Status || "")).length;
+        artifactStartedCount = runtimeArtifacts.filter((art) => /started/i.test(art.Status || "") || /running/i.test(art.Status || "")).length;
       } catch (error) {
         console.warn("get_tenant_overview artifact summary failed:", error.response?.data || error.message);
       }
@@ -532,10 +564,48 @@ const TOOL_HANDLERS = {
     };
   },
 
-  get_security_materials: async (params, tenantContext) =>
-    fetchRegisteredResource("get_security_materials", params, tenantContext, {
-      textFilters: [params?.name]
-    }),
+  get_security_materials: async (params, tenantContext) => {
+    const tenantError = requireTenantConnection(tenantContext);
+    if (tenantError) return tenantError;
+
+    const resources = ["UserCredentials", "OAuth2ClientCredentials", "SecureParameters"];
+    const allItems = [];
+    const attempted = [];
+
+    for (const resourceName of resources) {
+      try {
+        const res = await fetchODataResource({
+          token: tenantContext.token,
+          baseUrl: tenantContext.baseUrl,
+          resourceNames: [resourceName],
+          queryParams: {
+            $format: "json",
+            $top: "100"
+          },
+          textFilters: [params?.name],
+          itemType: "security-material"
+        });
+
+        if (res.items && res.items.length > 0) {
+          allItems.push(...res.items);
+        }
+        if (res.rawData?.attemptedResources) {
+          attempted.push(...res.rawData.attemptedResources);
+        }
+      } catch (err) {
+        attempted.push({ resourceName, status: 500, detail: err.message });
+      }
+    }
+
+    return {
+      items: allItems.slice(0, 50),
+      pendingItems: allItems.slice(50),
+      rawData: {
+        total: allItems.length,
+        attemptedResources: attempted
+      }
+    };
+  },
 
   get_keystores: async (params, tenantContext) =>
     fetchRegisteredResource("get_keystores", params, tenantContext, {
@@ -764,6 +834,140 @@ const TOOL_HANDLERS = {
     const { deleteJmsMessage } = getDeps();
     await deleteJmsMessage(tenantContext.baseUrl, tenantContext.token, sourceQueue, messageId, true);
     return { items: [], rawData: { deleted: true, messageId, sourceQueue } };
+  },
+
+  delete_variable: async (params, tenantContext) => {
+    const tenantError = requireTenantConnection(tenantContext);
+    if (tenantError) return tenantError;
+
+    const variableName = String(params?.variableName || "").trim();
+    const integrationFlow = String(params?.integrationFlow || "").trim();
+    if (!variableName || !integrationFlow) {
+      return { error: "I need variableName and integrationFlow to delete a variable.", needsClarification: true };
+    }
+
+    const resourcePath = `Variables(VariableName='${encodeURIComponent(variableName)}',IntegrationFlow='${encodeURIComponent(integrationFlow)}')`;
+    await deleteODataResource({ token: tenantContext.token, baseUrl: tenantContext.baseUrl, resourcePath });
+    return { items: [], rawData: { deleted: true, variableName, integrationFlow } };
+  },
+
+  update_variable: async (params, tenantContext) => {
+    const tenantError = requireTenantConnection(tenantContext);
+    if (tenantError) return tenantError;
+
+    const variableName = String(params?.variableName || "").trim();
+    const integrationFlow = String(params?.integrationFlow || "").trim();
+    const value = String(params?.value || "");
+    if (!variableName || !integrationFlow) {
+      return { error: "I need variableName and integrationFlow to update a variable.", needsClarification: true };
+    }
+
+    const resourcePath = `Variables(VariableName='${encodeURIComponent(variableName)}',IntegrationFlow='${encodeURIComponent(integrationFlow)}')/$value`;
+    await updateODataResource({
+      token: tenantContext.token,
+      baseUrl: tenantContext.baseUrl,
+      resourcePath,
+      payload: value,
+      isStream: true
+    });
+    return { items: [], rawData: { updated: true, variableName, integrationFlow } };
+  },
+
+  delete_number_range: async (params, tenantContext) => {
+    const tenantError = requireTenantConnection(tenantContext);
+    if (tenantError) return tenantError;
+
+    const numberRangeName = String(params?.numberRangeName || "").trim();
+    if (!numberRangeName) {
+      return { error: "I need numberRangeName to delete a number range.", needsClarification: true };
+    }
+
+    const resourcePath = `NumberRanges('${encodeURIComponent(numberRangeName)}')`;
+    await deleteODataResource({ token: tenantContext.token, baseUrl: tenantContext.baseUrl, resourcePath });
+    return { items: [], rawData: { deleted: true, numberRangeName } };
+  },
+
+  update_number_range: async (params, tenantContext) => {
+    const tenantError = requireTenantConnection(tenantContext);
+    if (tenantError) return tenantError;
+
+    const numberRangeName = String(params?.numberRangeName || "").trim();
+    const currentValue = String(params?.currentValue || "").trim();
+    if (!numberRangeName || !currentValue) {
+      return { error: "I need numberRangeName and currentValue to update a number range.", needsClarification: true };
+    }
+
+    const resourcePath = `NumberRanges('${encodeURIComponent(numberRangeName)}')`;
+    const payload = {
+      Name: numberRangeName,
+      CurrentValue: currentValue
+    };
+    await updateODataResource({
+      token: tenantContext.token,
+      baseUrl: tenantContext.baseUrl,
+      resourcePath,
+      payload,
+      isStream: false
+    });
+    return { items: [], rawData: { updated: true, numberRangeName, currentValue } };
+  },
+
+  delete_data_store: async (params, tenantContext) => {
+    const tenantError = requireTenantConnection(tenantContext);
+    if (tenantError) return tenantError;
+
+    const dataStoreName = String(params?.dataStoreName || "").trim();
+    const integrationFlow = String(params?.integrationFlow || "").trim();
+    const type = String(params?.type || "Default").trim();
+    if (!dataStoreName || !integrationFlow) {
+      return { error: "I need dataStoreName and integrationFlow to delete a data store.", needsClarification: true };
+    }
+
+    const resourcePath = `DataStores(DataStoreName='${encodeURIComponent(dataStoreName)}',IntegrationFlow='${encodeURIComponent(integrationFlow)}',Type='${encodeURIComponent(type)}')`;
+    await deleteODataResource({ token: tenantContext.token, baseUrl: tenantContext.baseUrl, resourcePath });
+    return { items: [], rawData: { deleted: true, dataStoreName, integrationFlow, type } };
+  },
+
+  delete_data_store_entry: async (params, tenantContext) => {
+    const tenantError = requireTenantConnection(tenantContext);
+    if (tenantError) return tenantError;
+
+    const entryId = String(params?.entryId || "").trim();
+    const dataStoreName = String(params?.dataStoreName || "").trim();
+    const integrationFlow = String(params?.integrationFlow || "").trim();
+    const type = String(params?.type || "Default").trim();
+    if (!entryId || !dataStoreName || !integrationFlow) {
+      return { error: "I need entryId, dataStoreName, and integrationFlow to delete an entry.", needsClarification: true };
+    }
+
+    const resourcePath = `DataStoreEntries(Id='${encodeURIComponent(entryId)}',DataStoreName='${encodeURIComponent(dataStoreName)}',IntegrationFlow='${encodeURIComponent(integrationFlow)}',Type='${encodeURIComponent(type)}')`;
+    await deleteODataResource({ token: tenantContext.token, baseUrl: tenantContext.baseUrl, resourcePath });
+    return { items: [], rawData: { deleted: true, entryId, dataStoreName, integrationFlow, type } };
+  },
+
+  download_data_store_entry_payload: async (params, tenantContext) => {
+    const tenantError = requireTenantConnection(tenantContext);
+    if (tenantError) return tenantError;
+
+    const entryId = String(params?.entryId || "").trim();
+    const dataStoreName = String(params?.dataStoreName || "").trim();
+    const integrationFlow = String(params?.integrationFlow || "").trim();
+    const type = String(params?.type || "Default").trim();
+    if (!entryId || !dataStoreName || !integrationFlow) {
+      return { error: "I need entryId, dataStoreName, and integrationFlow to download an entry's payload.", needsClarification: true };
+    }
+
+    return {
+      message: `Click below to download the message payload for entry "${entryId}".`,
+      items: [],
+      actions: [
+        {
+          label: "Download Payload File",
+          method: "GET",
+          url: `/datastore-entries/download?id=${encodeURIComponent(entryId)}&dataStoreName=${encodeURIComponent(dataStoreName)}&integrationFlow=${encodeURIComponent(integrationFlow)}&type=${encodeURIComponent(type)}&token=${encodeURIComponent(tenantContext.token)}&baseUrl=${encodeURIComponent(tenantContext.baseUrl)}`
+        }
+      ]
+    };
   },
 
   trigger_cpi_flow: async (params, tenantContext) =>

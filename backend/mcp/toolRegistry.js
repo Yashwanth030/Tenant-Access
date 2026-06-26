@@ -578,6 +578,152 @@ const MCP_TOOLS = [
     }
   },
   {
+    name: "delete_variable",
+    description: "Delete a variable from the connected tenant. Requires variableName and integrationFlow.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        variableName: {
+          type: "string",
+          description: "Name of the variable to delete."
+        },
+        integrationFlow: {
+          type: "string",
+          description: "Integration flow identifier for the variable."
+        }
+      },
+      required: ["variableName", "integrationFlow"]
+    }
+  },
+  {
+    name: "update_variable",
+    description: "Update or edit the value of a variable on the connected tenant. Requires variableName, integrationFlow, and value.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        variableName: {
+          type: "string",
+          description: "Name of the variable to update."
+        },
+        integrationFlow: {
+          type: "string",
+          description: "Integration flow identifier for the variable."
+        },
+        value: {
+          type: "string",
+          description: "The new value to set for the variable."
+        }
+      },
+      required: ["variableName", "integrationFlow", "value"]
+    }
+  },
+  {
+    name: "delete_number_range",
+    description: "Delete a number range from the connected tenant. Requires numberRangeName.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        numberRangeName: {
+          type: "string",
+          description: "Name of the number range to delete."
+        }
+      },
+      required: ["numberRangeName"]
+    }
+  },
+  {
+    name: "update_number_range",
+    description: "Update or reset the current value of a number range on the connected tenant. Requires numberRangeName and currentValue.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        numberRangeName: {
+          type: "string",
+          description: "Name of the number range to update/reset."
+        },
+        currentValue: {
+          type: "string",
+          description: "The new current value to assign to the number range."
+        }
+      },
+      required: ["numberRangeName", "currentValue"]
+    }
+  },
+  {
+    name: "delete_data_store",
+    description: "Delete a data store entirely from the connected tenant. Requires dataStoreName and integrationFlow.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dataStoreName: {
+          type: "string",
+          description: "Name of the data store to delete."
+        },
+        integrationFlow: {
+          type: "string",
+          description: "Integration flow identifier for the data store."
+        },
+        type: {
+          type: "string",
+          description: "Optional data store type (e.g. Default). Default is 'Default'."
+        }
+      },
+      required: ["dataStoreName", "integrationFlow"]
+    }
+  },
+  {
+    name: "delete_data_store_entry",
+    description: "Delete a specific entry inside a data store on the connected tenant. Requires entryId, dataStoreName, and integrationFlow.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        entryId: {
+          type: "string",
+          description: "Data store entry ID."
+        },
+        dataStoreName: {
+          type: "string",
+          description: "Name of the data store containing the entry."
+        },
+        integrationFlow: {
+          type: "string",
+          description: "Integration flow identifier for the data store."
+        },
+        type: {
+          type: "string",
+          description: "Optional data store type (e.g. Default). Default is 'Default'."
+        }
+      },
+      required: ["entryId", "dataStoreName", "integrationFlow"]
+    }
+  },
+  {
+    name: "download_data_store_entry_payload",
+    description: "Retrieve a download action for the message payload of a specific data store entry. Requires entryId, dataStoreName, and integrationFlow.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        entryId: {
+          type: "string",
+          description: "Data store entry ID."
+        },
+        dataStoreName: {
+          type: "string",
+          description: "Name of the data store containing the entry."
+        },
+        integrationFlow: {
+          type: "string",
+          description: "Integration flow identifier for the data store."
+        },
+        type: {
+          type: "string",
+          description: "Optional data store type (e.g. Default). Default is 'Default'."
+        }
+      },
+      required: ["entryId", "dataStoreName", "integrationFlow"]
+    }
+  },
+  {
     name: "trigger_cpi_flow",
     description:
       "Trigger CPI for a selected package/iFlow, status, and date range so HANA is populated with the exact requested monitoring data before export, ZIP, payload, or email actions.",

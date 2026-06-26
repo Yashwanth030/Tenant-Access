@@ -7,25 +7,42 @@ const buildTenantRootCandidates = (baseUrl) => {
   const cleanedBaseUrl = cleanUrl(baseUrl);
   if (!cleanedBaseUrl) return [];
 
-  const roots = [cleanedBaseUrl.replace(/\/api\/v1$/, "")];
+  const stripSuffix = (url) => {
+    return url
+      .replace(/\/odata\/api\/v1$/, "")
+      .replace(/\/api\/v1$/, "")
+      .replace(/\/odata\/v1$/, "");
+  };
+
+  const roots = [stripSuffix(cleanedBaseUrl)];
 
   if (cleanedBaseUrl.includes("-rt.cfapps.")) {
-    roots.push(cleanedBaseUrl.replace("-rt.cfapps.", ".cfapps.").replace(/\/api\/v1$/, ""));
+    roots.push(stripSuffix(cleanedBaseUrl.replace("-rt.cfapps.", ".cfapps.")));
+    roots.push(stripSuffix(cleanedBaseUrl.replace("-rt.cfapps.", "-trial.cfapps.")));
   } else if (cleanedBaseUrl.includes(".cfapps.")) {
-    roots.push(cleanedBaseUrl.replace(".cfapps.", "-rt.cfapps.").replace(/\/api\/v1$/, ""));
+    roots.push(stripSuffix(cleanedBaseUrl.replace(".cfapps.", "-rt.cfapps.")));
+    roots.push(stripSuffix(cleanedBaseUrl.replace(".cfapps.", "-trial.cfapps.")));
   }
 
   if (cleanedBaseUrl.includes("it-cpi001")) {
-    roots.push(cleanedBaseUrl.replace("it-cpi001", "integrationsuite").replace(/\/api\/v1$/, ""));
+    roots.push(stripSuffix(cleanedBaseUrl.replace("it-cpi001", "integrationsuite")));
+    roots.push(stripSuffix(cleanedBaseUrl.replace("it-cpi001", "integrationsuite-trial")));
   }
 
   try {
-    const original = new URL(cleanedBaseUrl.replace(/\/api\/v1$/, ""));
+    const original = new URL(stripSuffix(cleanedBaseUrl));
     const hostnameParts = original.hostname.split(".");
-    if (hostnameParts.length > 2 && hostnameParts[1] !== "integrationsuite") {
-      const parts = [...hostnameParts];
-      parts[1] = "integrationsuite";
-      roots.push(`${original.protocol}//${parts.join(".")}`);
+    if (hostnameParts.length > 2) {
+      if (hostnameParts[1] !== "integrationsuite") {
+        const parts = [...hostnameParts];
+        parts[1] = "integrationsuite";
+        roots.push(`${original.protocol}//${parts.join(".")}`);
+      }
+      if (hostnameParts[1] !== "integrationsuite-trial") {
+        const parts = [...hostnameParts];
+        parts[1] = "integrationsuite-trial";
+        roots.push(`${original.protocol}//${parts.join(".")}`);
+      }
     }
   } catch {
     // Keep the explicit roots collected above.
@@ -34,13 +51,21 @@ const buildTenantRootCandidates = (baseUrl) => {
   return [...new Set(roots.map(cleanUrl).filter(Boolean))];
 };
 
-const buildApiBaseCandidates = (baseUrl) =>
-  buildTenantRootCandidates(baseUrl).map((root) => `${root}/api/v1`);
+const buildApiBaseCandidates = (baseUrl) => {
+  const roots = buildTenantRootCandidates(baseUrl);
+  const candidates = [];
+  for (const root of roots) {
+    candidates.push(`${root}/api/v1`);
+    candidates.push(`${root}/odata/api/v1`);
+  }
+  return [...new Set(candidates)];
+};
 
 const buildTenantHeaders = (token, { csrfToken = "", cookie = "" } = {}) => {
   const headers = {
     Authorization: `Bearer ${token}`,
-    Accept: "application/json",
+    Accept: "application/json, text/javascript, */*; q=0.01",
+    "X-Requested-With": "XMLHttpRequest",
     "DataServiceVersion": "2.0"
   };
 
@@ -118,16 +143,21 @@ const fetchODataResource = async ({
 
   const apiBases = buildApiBaseCandidates(baseUrl);
   const attempts = [];
+  const deadBases = new Set();
   let emptySuccess = null;
 
   for (const apiBase of apiBases) {
+    if (deadBases.has(apiBase)) {
+      continue;
+    }
+
     for (const resourceName of resourceNames) {
       const endpoint = `${apiBase}/${resourceName}${buildQueryString(queryParams)}`;
 
       try {
         const response = await axios.get(endpoint, {
           headers: buildTenantHeaders(token),
-          timeout: 30000,
+          timeout: 8000,
           validateStatus: (status) => status >= 200 && status < 500
         });
 
@@ -171,6 +201,19 @@ const fetchODataResource = async ({
       } catch (error) {
         const detail = sanitizeErrorDetail(error);
         attempts.push({ resourceName, apiBase, ...detail });
+
+        // If it's a network or connection/timeout error, mark the candidate base as dead
+        if (
+          error.code === "ECONNABORTED" ||
+          error.code === "ETIMEDOUT" ||
+          error.code === "ENOTFOUND" ||
+          error.code === "ECONNREFUSED" ||
+          error.message?.toLowerCase().includes("timeout") ||
+          error.message?.toLowerCase().includes("network")
+        ) {
+          deadBases.add(apiBase);
+          break; // Stop querying resources on this unreachable hostname
+        }
       }
     }
   }
@@ -189,13 +232,109 @@ const fetchODataResource = async ({
   return {
     message:
       emptyMessage ||
-      "This SAP Integration Suite area is not available on the connected tenant through the standard OData APIs we tried. Confirm the endpoint in SAP cockpit network inspect and update the resource registry.",
+      "This resource is currently not accessible on the connected tenant. Please verify that your credentials have sufficient permissions, or access this area directly via the SAP Integration Suite cockpit.",
     items: [],
     actions: [],
     rawData: {
       attemptedResources: attempts.slice(0, 12)
     }
   };
+};
+
+const deleteODataResource = async ({ token, baseUrl, resourcePath }) => {
+  if (!token || !baseUrl) {
+    return { error: "Connect a tenant first, then I can run that live tenant operation." };
+  }
+
+  const apiBases = buildApiBaseCandidates(baseUrl);
+  let lastError;
+
+  for (const apiBase of apiBases) {
+    const endpoint = `${apiBase}/${resourcePath}`;
+    try {
+      await axios.delete(endpoint, {
+        headers: {
+          ...buildTenantHeaders(token),
+          "MaxDataServiceVersion": "2.0",
+          "X-Requested-With": "XMLHttpRequest"
+        },
+        timeout: 15000
+      });
+      return { success: true };
+    } catch (error) {
+      lastError = error;
+      console.warn(`deleteODataResource failed on ${apiBase}/${resourcePath}:`, error.response?.data || error.message);
+    }
+  }
+
+  throw lastError || new Error(`Delete failed for ${resourcePath}`);
+};
+
+const updateODataResource = async ({ token, baseUrl, resourcePath, payload, isStream = false }) => {
+  if (!token || !baseUrl) {
+    return { error: "Connect a tenant first, then I can run that live tenant operation." };
+  }
+
+  const apiBases = buildApiBaseCandidates(baseUrl);
+  let lastError;
+
+  for (const apiBase of apiBases) {
+    const endpoint = `${apiBase}/${resourcePath}`;
+    try {
+      const headers = {
+        ...buildTenantHeaders(token),
+        "MaxDataServiceVersion": "2.0",
+        "X-Requested-With": "XMLHttpRequest"
+      };
+
+      if (isStream) {
+        headers["Content-Type"] = "text/plain";
+      } else {
+        headers["Content-Type"] = "application/json";
+      }
+
+      await axios.put(endpoint, payload, { headers, timeout: 15000 });
+      return { success: true };
+    } catch (error) {
+      lastError = error;
+      console.warn(`updateODataResource failed on ${apiBase}/${resourcePath}:`, error.response?.data || error.message);
+    }
+  }
+
+  throw lastError || new Error(`Update failed for ${resourcePath}`);
+};
+
+const downloadODataResourceStream = async ({ token, baseUrl, resourcePath }) => {
+  if (!token || !baseUrl) {
+    return { error: "Connect a tenant first, then I can run that live tenant operation." };
+  }
+
+  const apiBases = buildApiBaseCandidates(baseUrl);
+  let lastError;
+
+  for (const apiBase of apiBases) {
+    const endpoint = `${apiBase}/${resourcePath}`;
+    try {
+      const headers = {
+        ...buildTenantHeaders(token),
+        Accept: "*/*",
+        "X-Requested-With": "XMLHttpRequest"
+      };
+
+      const response = await axios.get(endpoint, {
+        headers,
+        responseType: "text",
+        timeout: 20000
+      });
+
+      return response.data;
+    } catch (error) {
+      lastError = error;
+      console.warn(`downloadODataResourceStream failed on ${apiBase}/${resourcePath}:`, error.response?.data || error.message);
+    }
+  }
+
+  throw lastError || new Error(`Download stream failed for ${resourcePath}`);
 };
 
 module.exports = {
@@ -205,5 +344,8 @@ module.exports = {
   buildQueryString,
   filterRowsByText,
   fetchODataResource,
-  redactSensitiveFields
+  redactSensitiveFields,
+  deleteODataResource,
+  updateODataResource,
+  downloadODataResourceStream
 };
