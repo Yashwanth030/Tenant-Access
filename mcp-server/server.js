@@ -37,7 +37,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   return executeTool(name, args);
 });
 
-const isSse = process.argv.includes("--sse") || process.env.PORT || process.env.SSE;
+const isSse = process.argv.includes("--sse") || process.env.SSE === "true";
 
 if (isSse) {
   const app = express();
@@ -71,7 +71,7 @@ if (isSse) {
     res.status(400).send("No active session matches the message");
   });
 
-  const port = process.env.PORT || 5001;
+  const port = (process.env.PORT && process.env.PORT !== "5000") ? process.env.PORT : 5001;
   app.listen(port, () => {
     console.log(`MCP SSE Server listening on port ${port}`);
     console.log(`SSE URL: http://localhost:${port}/sse`);
