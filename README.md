@@ -25,69 +25,65 @@ The application integrates AI operations using the Model Context Protocol (MCP) 
 ### System Architecture Diagram
 
 ```mermaid
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
 graph TD
     %% Styling
     classDef frontend fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
     classDef backend fill:#efebe9,stroke:#4e342e,stroke-width:2px;
-    classDef standaloneMcp fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
     classDef sap fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-    classDef ai fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
+    classDef db fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px;
+    classDef ext fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
 
     %% Nodes
-    subgraph FrontendApp ["React Frontend (Vite/SPA)"]
-        UI["UI Pages (StatusOverview, JmsQueues, TenantAccess)"]
-        ChatbotOverlay["Chatbot Overlay UI (AppChatbot.jsx)"]
-    end
+    User([User])
     
-    subgraph BackendApp ["Express Backend Server (Port 5000)"]
-        Routes["API Endpoints (/connectTenant, /jms-queues, /chatbot/query)"]
-        CoreAPI["SAP API Client (tenantApiClient.js)"]
-        McpCore["In-Process MCP Client (mcpClient.js, toolHandlers.js, toolRegistry.js)"]
-        Summarizer["AI Summarizer (summarizer.js)"]
+    subgraph SAP_BTP ["SAP BTP Environment"]
+        Frontend["React UI Application (Frontend)"]
+        Backend["Backend: Node.js (Application Service)"]
+        ODataAPI["OData API (Tenant Packages & Artifacts)"]
+        CPI["CPI (SAP Integration Suite)"]
+        HanaDB[("SAP HANA DB")]
     end
 
-    subgraph StandaloneMcp ["Standalone MCP Server (Port 5001)"]
-        McpServer["MCP Protocol Server (server.js)"]
-        McpReg["Shared Tool Registry"]
-        McpBridge["HTTP Chatbot Bridge (Forward to Port 5000)"]
+    subgraph AI_MCP ["AI & MCP Layer"]
+        McpCore["In-Process MCP Client (mcpClient.js / toolHandlers.js)"]
+        OpenRouter["OpenRouter AI (openrouter/free)"]
+        McpServer["Standalone MCP Server (server.js - Stdio/SSE)"]
     end
 
-    subgraph ExternalServices ["SAP & External Services"]
-        SAP_DT["SAP Integration Suite (Design-Time APIs /api/v1)"]
-        SAP_RT["Process Integration Runtime (JMS OData /api/v1 on -rt host)"]
-        HanaDB["HANA Cloud DB (Saved MPL Logs & Reports)"]
-        OpenRouter["OpenRouter API (Free Model Tier: openrouter/free)"]
+    subgraph OutputActions ["Output & Actions (Outside BTP)"]
+        Excel["Convert to Excel"]
+        Email["Send Email via SMTP"]
     end
 
-    %% Connections
-    UI -->|JSON HTTP Requests| Routes
-    ChatbotOverlay -->|Query Prompt| Routes
+    %% Flow Connections
+    User -->|1. Input| Frontend
+    Frontend -->|2. Input / Query| Backend
     
-    Routes -->|OData GET/POST/MERGE| CoreAPI
-    CoreAPI -->|Design-time Actions| SAP_DT
-    CoreAPI -->|JMS Queue Actions| SAP_RT
-    
-    %% AI Flow
-    Routes -->|Forward Prompt| McpCore
-    McpCore -->|Prompt + Tool Schemas| OpenRouter
-    OpenRouter -->|Returns Tool Call| McpCore
-    McpCore -->|Executes Handler| CoreAPI
-    McpCore -->|Raw Tool Result| Summarizer
-    Summarizer -->|Result Summary Request| OpenRouter
-    OpenRouter -->|Returns User Text| Summarizer
-    
-    %% Standalone MCP Connections
-    McpServer -->|SSE or Stdio| ExternalClients["External MCP Clients (Claude Desktop, Cursor, LibreChat)"]
-    McpServer --> McpReg
-    McpServer --> McpBridge
-    McpBridge -->|Forward toolName & args| Routes
+    Backend -->|3. Fetch Packages & Artifacts| ODataAPI
+    ODataAPI -->|4. Return Packages & Artifacts| Backend
+    ODataAPI -->|5. Sender Input| CPI
+    CPI -->|6. Store Processed Data| HanaDB
+    HanaDB -->|7. Fetch Processed Data| Backend
+    Backend -->|8. Return Processed Data| Frontend
 
-    %% Class Application
-    class UI,ChatbotOverlay frontend;
-    class Routes,CoreAPI,McpCore,Summarizer backend;
-    class McpServer,McpReg,McpBridge standaloneMcp;
-    class SAP_DT,SAP_RT,HanaDB sap;
-    class OpenRouter ai;
+    %% AI / MCP Integrations
+    Backend <-->|Prompt / Execute Tools| McpCore
+    McpCore <-->|Prompt + Schemas / Tool Choice| OpenRouter
+    
+    McpServer <-->|Forward MCP Tool Request| Backend
+    McpServer <-->|Connect via Stdio/SSE| ExtClients["External Clients (Claude, Cursor)"]
+
+    %% Output Actions Flow
+    Backend --> Excel
+    Excel --> Email
+
+    %% Class Assignments
+    class Frontend frontend;
+    class Backend,McpCore,McpServer backend;
+    class ODataAPI,CPI sap;
+    class HanaDB db;
+    class OpenRouter,ExtClients,Excel,Email,User ext;
 ```
 
 ### What Changed in the MCP Core
