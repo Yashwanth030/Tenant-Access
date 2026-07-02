@@ -311,10 +311,25 @@ const buildBaseUrlCandidates = (baseUrl) => {
 
     const candidates = [cleanedBaseUrl];
 
+    // Standard Cloud Foundry -rt mappings
     if (cleanedBaseUrl.includes("-rt.cfapps.")) {
         candidates.push(cleanedBaseUrl.replace("-rt.cfapps.", ".cfapps."));
     } else if (cleanedBaseUrl.includes(".cfapps.")) {
         candidates.push(cleanedBaseUrl.replace(".cfapps.", "-rt.cfapps."));
+    }
+
+    // Integration Suite specific -rt.integrationsuite mappings
+    // Handles conversion between it-cpi001, integrationsuite and their runtime -rt hosts
+    const match = cleanedBaseUrl.match(/https?:\/\/([^.]+)\.(it-cpi001|integrationsuite)(-rt)?\.cfapps\.(.+)$/i);
+    if (match) {
+        const subdomain = match[1];
+        const regionDomain = match[4];
+        const cleanSub = subdomain.endsWith("-rt") ? subdomain.slice(0, -3) : subdomain;
+        
+        candidates.push(`https://${cleanSub}.it-cpi001.cfapps.${regionDomain}`);
+        candidates.push(`https://${cleanSub}-rt.it-cpi001.cfapps.${regionDomain}`);
+        candidates.push(`https://${cleanSub}.integrationsuite.cfapps.${regionDomain}`);
+        candidates.push(`https://${cleanSub}-rt.integrationsuite.cfapps.${regionDomain}`);
     }
 
     return [...new Set(candidates)];
@@ -354,32 +369,12 @@ const isAuthoritativeTenantError = (error) => {
 };
 
 const buildIntegrationSuiteODataCandidates = (baseUrl) => {
-  const cleanedBaseUrl = cleanUrl(baseUrl);
-
-  if (!cleanedBaseUrl) {
-    return [];
-  }
-
-  const candidates = [];
-
-  try {
-    let fixedUrl = cleanedBaseUrl;
-
-    if (fixedUrl.includes("it-cpi001")) {
-      candidates.push(`${fixedUrl.replace("it-cpi001", "integrationsuite")}/api/v1`);
-      candidates.push(`${fixedUrl.replace("it-cpi001", "integrationsuite-trial")}/api/v1`);
-    }
-
-    const fixed = new URL(fixedUrl);
-    candidates.push(`${fixed.origin}/api/v1`);
-
-    const original = new URL(cleanedBaseUrl);
-    candidates.push(`${original.origin}/api/v1`);
-  } catch {
-    // Ignore malformed URLs and let callers surface the original issue.
-  }
-
-  return [...new Set(candidates.map(cleanUrl).filter(Boolean))];
+  const baseCandidates = buildBaseUrlCandidates(baseUrl);
+  const candidates = baseCandidates.flatMap(url => [
+    `${url}/api/v1`,
+    url.includes("integrationsuite") ? `${url.replace("integrationsuite", "integrationsuite-trial")}/api/v1` : null
+  ]).filter(Boolean);
+  return [...new Set(candidates)];
 };
 
 const buildIntegrationSuiteApiCandidates = (baseUrl) => {
@@ -1283,30 +1278,8 @@ const getODataCsrfContext = async (serviceBaseUrl, token) => {
 };
 
 const buildMoveApiCandidates = (baseUrl) => {
-  const cleanedBaseUrl = cleanUrl(baseUrl);
-
-  if (!cleanedBaseUrl) {
-    return [];
-  }
-
-  const candidates = [];
-
-  try {
-    let fixedUrl = cleanedBaseUrl;
-    if (fixedUrl.includes("integrationsuite")) {
-      fixedUrl = fixedUrl.replace("integrationsuite", "it-cpi001");
-    }
-
-    const fixed = new URL(fixedUrl);
-    candidates.push(`${fixed.origin}/api/v1`);
-
-    const original = new URL(cleanedBaseUrl);
-    candidates.push(`${original.origin}/api/v1`);
-  } catch {
-    // Ignore malformed URLs and let callers surface the original issue.
-  }
-
-  return [...new Set(candidates.map(cleanUrl).filter(Boolean))];
+  const baseCandidates = buildBaseUrlCandidates(baseUrl);
+  return baseCandidates.map(url => `${url}/api/v1`);
 };
 
 const getApiCsrfContext = async (serviceBaseUrl, token) => {
@@ -1351,9 +1324,22 @@ const getApiCsrfContext = async (serviceBaseUrl, token) => {
   };
 };
 
+const decodeJmsMessageId = (id) => {
+  const idStr = String(id || "").trim();
+  if (idStr.startsWith("x-hex-")) {
+    try {
+      return Buffer.from(idStr.substring(6), "hex").toString("utf-8");
+    } catch (e) {
+      console.warn("Failed to decode hex JMS Message ID:", e.message);
+    }
+  }
+  return idStr;
+};
+
 const moveJmsMessageDirect = async (baseUrl, token, sourceQueueName, targetQueueName, jmsMessageId) => {
   const candidates = buildMoveApiCandidates(baseUrl);
-  const selector = `JMSMessageID='${jmsMessageId}'`;
+  const cleanId = decodeJmsMessageId(jmsMessageId);
+  const selector = `JMSMessageID='${cleanId}'`;
   let lastError;
 
   for (const serviceBaseUrl of candidates) {
@@ -1461,7 +1447,8 @@ const buildRetryBatchBody = ({ entityPath, entityUrl, entityPayload, csrfToken }
 const buildMoveBatchBody = ({ sourceQueueName, targetQueueName, jmsMessageId, csrfToken }) => {
   const batchBoundary = createMultipartBoundary("batch");
   const changeSetBoundary = createMultipartBoundary("changeset");
-  const selector = `JMSMessageID='${jmsMessageId}'`;
+  const cleanId = decodeJmsMessageId(jmsMessageId);
+  const selector = `JMSMessageID='${cleanId}'`;
   const movePath =
     `Queues('${encodeODataKey(sourceQueueName)}')` +
     `?operation=move&target_queue=${encodeURIComponent(targetQueueName)}` +
@@ -1482,7 +1469,11 @@ const buildMoveBatchBody = ({ sourceQueueName, targetQueueName, jmsMessageId, cs
     "DataServiceVersion: 2.0",
     "MaxDataServiceVersion: 2.0",
     "X-Requested-With: XMLHttpRequest",
+    "Content-Type: application/json",
+    "Content-Length: 2",
     `x-csrf-token: ${csrfToken}`,
+    "",
+    "{}",
     "",
     `--${changeSetBoundary}--`,
     `--${batchBoundary}`,
@@ -1650,59 +1641,7 @@ const retryJmsMessageViaBatch = async (baseUrl, token, sourceQueueName, jmsMessa
   throw lastError || new Error("Failed to retry JMS message via batch.");
 };
 
-const retryJmsMessageDirect = async (baseUrl, token, sourceQueueName, jmsMessageId, failed) => {
-  const candidates = buildMoveApiCandidates(baseUrl);
-  const selector = `JMSMessageID='${jmsMessageId}'`;
-  let lastError;
 
-  for (const serviceBaseUrl of candidates) {
-    try {
-      const { csrfToken, cookieHeader } = await getApiCsrfContext(serviceBaseUrl, token);
-
-      if (!csrfToken) {
-        throw new Error(`Missing CSRF token from ${serviceBaseUrl}.`);
-      }
-
-      const queueResponse = await axios.get(
-        `${serviceBaseUrl}/Queues('${encodeODataKey(sourceQueueName)}')`,
-        {
-          headers: tenantHeaders(token),
-          params: { $format: "json" },
-          timeout: 30000
-        }
-      );
-
-      const queueEntity = queueResponse.data?.d || queueResponse.data || {};
-      const payload = {
-        ...(queueEntity && typeof queueEntity === "object" ? queueEntity : {})
-      };
-
-      await axios.request({
-        method: "PATCH",
-        url:
-          `${serviceBaseUrl}/Queues('${encodeODataKey(sourceQueueName)}')` +
-          `?operation=retry&selector=${encodeURIComponent(selector)}`,
-        data: payload,
-        headers: {
-          ...tenantHeaders(token),
-          "x-csrf-token": csrfToken,
-          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-          "Content-Type": "application/json"
-        },
-        timeout: 30000
-      });
-      return;
-    } catch (error) {
-      lastError = error;
-      console.warn(
-        `retryJmsMessageDirect failed for ${jmsMessageId} in ${sourceQueueName} on ${serviceBaseUrl}:`,
-        error.response?.data || error.message
-      );
-    }
-  }
-
-  throw lastError || new Error("Failed to retry JMS message directly.");
-};
 const retryJmsMessageSimple = async (baseUrl, token, queueName, jmsMessageId, failed) => {
   const candidates = buildBaseUrlCandidates(baseUrl);
 
@@ -1746,16 +1685,6 @@ const retryJmsMessageSimple = async (baseUrl, token, queueName, jmsMessageId, fa
   throw new Error("Retry failed for all candidates");
 };
 const retryJmsMessage = async (baseUrl, token, sourceQueueName, jmsMessageId, failed) => {
-  try {
-    await retryJmsMessageDirect(baseUrl, token, sourceQueueName, jmsMessageId, failed);
-    return;
-  } catch (directError) {
-    console.warn(
-      `retryJmsMessage direct API route failed for ${jmsMessageId} in ${sourceQueueName}:`,
-      directError.response?.data || directError.message
-    );
-  }
-
   try {
     await retryJmsMessageViaBatch(baseUrl, token, sourceQueueName, jmsMessageId, failed);
     return;
@@ -3524,7 +3453,7 @@ const attachChatbotTrace = (response, intent, tenantContext) => ({
   }
 });
 
-const { configureMcpTools, runMcpChat } = require("./mcp/mcpClient");
+const { configureMcpTools, runMcpChat, promptHeuristicSaysNoList } = require("./mcp/mcpClient");
 const { executeMcpTool } = require("./mcp/toolHandlers");
 const { MCP_TOOLS } = require("./mcp/toolRegistry");
 
@@ -3550,8 +3479,12 @@ const handleChatbotPrompt = async ({ prompt, token, baseUrl, packages }) => {
 
   // Direct rule-based bypass for high confidence direct prompts (like Option B)
   const directIntent = classifyChatbotIntent(prompt);
-  if (directIntent && directIntent.confidence >= 0.95) {
+  if (directIntent && directIntent.confidence > 0.95) {
     const response = await executeTenantChatTool({ intent: directIntent, tenantContext });
+    if (promptHeuristicSaysNoList(prompt)) {
+      response.items = [];
+      if (response.pendingItems) response.pendingItems = [];
+    }
     return attachChatbotTrace(response, directIntent, tenantContext);
   }
 
@@ -3619,6 +3552,10 @@ const handleChatbotPrompt = async ({ prompt, token, baseUrl, packages }) => {
   }
 
   const response = await executeTenantChatTool({ intent, tenantContext });
+  if (promptHeuristicSaysNoList(prompt)) {
+    response.items = [];
+    if (response.pendingItems) response.pendingItems = [];
+  }
   return attachChatbotTrace(response, intent, tenantContext);
 };
 
@@ -3813,17 +3750,17 @@ app.post("/jms-messages/retry", async (req, res) => {
   }
 
   try {
-await Promise.all(
-  messages.map((message) =>
-    retryJmsMessageSimple(
-      baseUrl,
-      token,
-      sourceQueueName,
-      message.jmsMessageId,
-      Boolean(message.failed)
-    )
-  )
-);
+    await Promise.all(
+      messages.map((message) =>
+        retryJmsMessage(
+          baseUrl,
+          token,
+          sourceQueueName,
+          message.jmsMessageId,
+          Boolean(message.failed)
+        )
+      )
+    );
 
     return res.json({ message: "Messages retried successfully." });
   } catch (error) {

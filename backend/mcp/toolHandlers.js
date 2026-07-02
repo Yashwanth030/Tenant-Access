@@ -393,18 +393,31 @@ const TOOL_HANDLERS = {
 
   list_packages: async (params, { token, baseUrl, packages = [] }) => {
     const { fetchPackages } = getDeps();
+    const searchName = String(params?.packageName || params?.name || "").trim().toLowerCase();
 
+    let livePackages = [];
     if (token && baseUrl) {
-      const { packages: livePackages } = await fetchPackages(baseUrl, token);
-      return {
-        items: livePackages.map((pkg) => ({ type: "package", ...pkg })),
-        rawData: { total: livePackages.length, packages: livePackages.slice(0, 20) }
-      };
+      const { packages: fetched } = await fetchPackages(baseUrl, token);
+      livePackages = fetched || [];
+    } else {
+      livePackages = packages || [];
+    }
+
+    let filteredPackages = livePackages;
+    if (searchName) {
+      filteredPackages = livePackages.filter(pkg => 
+        String(pkg.Id || "").toLowerCase().includes(searchName) || 
+        String(pkg.Name || "").toLowerCase().includes(searchName)
+      );
     }
 
     return {
-      items: packages.map((pkg) => ({ type: "package", ...pkg })),
-      rawData: { total: packages.length, packages: packages.slice(0, 20) }
+      items: filteredPackages.map((pkg) => ({ type: "package", ...pkg })),
+      rawData: { 
+        total: filteredPackages.length, 
+        packages: filteredPackages.slice(0, 20),
+        searchFiltered: Boolean(searchName)
+      }
     };
   },
 
@@ -579,8 +592,7 @@ const TOOL_HANDLERS = {
           baseUrl: tenantContext.baseUrl,
           resourceNames: [resourceName],
           queryParams: {
-            $format: "json",
-            $top: "100"
+            $format: "json"
           },
           textFilters: [params?.name],
           itemType: "security-material"
@@ -598,8 +610,8 @@ const TOOL_HANDLERS = {
     }
 
     return {
-      items: allItems.slice(0, 50),
-      pendingItems: allItems.slice(50),
+      items: allItems.slice(0, 500),
+      pendingItems: allItems.slice(500),
       rawData: {
         total: allItems.length,
         attemptedResources: attempted
@@ -841,9 +853,9 @@ const TOOL_HANDLERS = {
     if (tenantError) return tenantError;
 
     const variableName = String(params?.variableName || "").trim();
-    const integrationFlow = String(params?.integrationFlow || "").trim();
-    if (!variableName || !integrationFlow) {
-      return { error: "I need variableName and integrationFlow to delete a variable.", needsClarification: true };
+    const integrationFlow = String(params?.integrationFlow || "globally_defined").trim();
+    if (!variableName) {
+      return { error: "I need variableName to delete a variable.", needsClarification: true };
     }
 
     const resourcePath = `Variables(VariableName='${encodeURIComponent(variableName)}',IntegrationFlow='${encodeURIComponent(integrationFlow)}')`;
@@ -856,10 +868,10 @@ const TOOL_HANDLERS = {
     if (tenantError) return tenantError;
 
     const variableName = String(params?.variableName || "").trim();
-    const integrationFlow = String(params?.integrationFlow || "").trim();
+    const integrationFlow = String(params?.integrationFlow || "globally_defined").trim();
     const value = String(params?.value || "");
-    if (!variableName || !integrationFlow) {
-      return { error: "I need variableName and integrationFlow to update a variable.", needsClarification: true };
+    if (!variableName) {
+      return { error: "I need variableName to update a variable.", needsClarification: true };
     }
 
     const resourcePath = `Variables(VariableName='${encodeURIComponent(variableName)}',IntegrationFlow='${encodeURIComponent(integrationFlow)}')/$value`;
@@ -897,10 +909,15 @@ const TOOL_HANDLERS = {
       return { error: "I need numberRangeName and currentValue to update a number range.", needsClarification: true };
     }
 
+    const numericValue = parseInt(currentValue, 10);
+    if (isNaN(numericValue)) {
+      return { error: "currentValue must be a valid integer.", needsClarification: true };
+    }
+
     const resourcePath = `NumberRanges('${encodeURIComponent(numberRangeName)}')`;
     const payload = {
       Name: numberRangeName,
-      CurrentValue: currentValue
+      CurrentValue: numericValue
     };
     await updateODataResource({
       token: tenantContext.token,
@@ -909,7 +926,7 @@ const TOOL_HANDLERS = {
       payload,
       isStream: false
     });
-    return { items: [], rawData: { updated: true, numberRangeName, currentValue } };
+    return { items: [], rawData: { updated: true, numberRangeName, currentValue: numericValue } };
   },
 
   delete_data_store: async (params, tenantContext) => {

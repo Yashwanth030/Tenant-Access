@@ -14,7 +14,9 @@ const DEFAULT_QUERY = {
 const RESOURCE_REGISTRY = {
   get_security_materials: {
     resources: ["UserCredentials", "OAuth2ClientCredentials", "SecureParameters"],
-    queryParams: DEFAULT_QUERY,
+    queryParams: {
+      $format: "json"
+    },
     itemType: "security-material",
     preferNonEmpty: true
   },

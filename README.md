@@ -15,20 +15,89 @@ The app has a React frontend and an Express backend. A user connects to a tenant
 - manage JMS queue messages with `Move`, `Retry`, and `Delete`
 - ask the chatbot for the same operational data and actions available manually in the UI
 
-## AI And MCP Server Update
+## System Architecture & AI Integration
 
-The chatbot now uses an in-process MCP-style tool calling flow powered by OpenRouter. MCP here means the backend exposes a registry of safe application tools to the AI model, the model chooses the right tool for the user's prompt, and the backend executes that tool using existing server functions.
+The application integrates AI operations using the Model Context Protocol (MCP) design across two configurations:
 
-There is no separate MCP server process. The MCP layer lives inside the existing Express backend process in `backend/server.js`.
+1. **In-Process MCP Client (Chatbot Overlay):** Built directly into the Express backend server. It handles conversational prompts using OpenRouter (configured to run on the free-tier `openrouter/free` model) by selecting and executing backend tools.
+2. **Standalone MCP Server:** Exposes the exact same 31 backend tools to external MCP-compatible editors and clients (such as Claude Desktop, LibreChat, Open WebUI, or Cursor). It is located in the [mcp-server](file:///c:/Users/yashwanth.gr/Desktop/Tenant-Access/mcp-server) directory and supports both **Stdio** (local execution) and **SSE (Server-Sent Events)** (remote deployment over HTTP) transport modes.
 
-### What Changed
+### System Architecture Diagram
+
+```mermaid
+graph TD
+    %% Styling
+    classDef frontend fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
+    classDef backend fill:#efebe9,stroke:#4e342e,stroke-width:2px;
+    classDef standaloneMcp fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
+    classDef sap fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    classDef ai fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
+
+    %% Nodes
+    subgraph FrontendApp ["React Frontend (Vite/SPA)"]
+        UI["UI Pages (StatusOverview, JmsQueues, TenantAccess)"]
+        ChatbotOverlay["Chatbot Overlay UI (AppChatbot.jsx)"]
+    end
+    
+    subgraph BackendApp ["Express Backend Server (Port 5000)"]
+        Routes["API Endpoints (/connectTenant, /jms-queues, /chatbot/query)"]
+        CoreAPI["SAP API Client (tenantApiClient.js)"]
+        McpCore["In-Process MCP Client (mcpClient.js, toolHandlers.js, toolRegistry.js)"]
+        Summarizer["AI Summarizer (summarizer.js)"]
+    end
+
+    subgraph StandaloneMcp ["Standalone MCP Server (Port 5001)"]
+        McpServer["MCP Protocol Server (server.js)"]
+        McpReg["Shared Tool Registry"]
+        McpBridge["HTTP Chatbot Bridge (Forward to Port 5000)"]
+    end
+
+    subgraph ExternalServices ["SAP & External Services"]
+        SAP_DT["SAP Integration Suite (Design-Time APIs /api/v1)"]
+        SAP_RT["Process Integration Runtime (JMS OData /api/v1 on -rt host)"]
+        HanaDB["HANA Cloud DB (Saved MPL Logs & Reports)"]
+        OpenRouter["OpenRouter API (Free Model Tier: openrouter/free)"]
+    end
+
+    %% Connections
+    UI -->|JSON HTTP Requests| Routes
+    ChatbotOverlay -->|Query Prompt| Routes
+    
+    Routes -->|OData GET/POST/MERGE| CoreAPI
+    CoreAPI -->|Design-time Actions| SAP_DT
+    CoreAPI -->|JMS Queue Actions| SAP_RT
+    
+    %% AI Flow
+    Routes -->|Forward Prompt| McpCore
+    McpCore -->|Prompt + Tool Schemas| OpenRouter
+    OpenRouter -->|Returns Tool Call| McpCore
+    McpCore -->|Executes Handler| CoreAPI
+    McpCore -->|Raw Tool Result| Summarizer
+    Summarizer -->|Result Summary Request| OpenRouter
+    OpenRouter -->|Returns User Text| Summarizer
+    
+    %% Standalone MCP Connections
+    McpServer -->|SSE or Stdio| ExternalClients["External MCP Clients (Claude Desktop, Cursor, LibreChat)"]
+    McpServer --> McpReg
+    McpServer --> McpBridge
+    McpBridge -->|Forward toolName & args| Routes
+
+    %% Class Application
+    class UI,ChatbotOverlay frontend;
+    class Routes,CoreAPI,McpCore,Summarizer backend;
+    class McpServer,McpReg,McpBridge standaloneMcp;
+    class SAP_DT,SAP_RT,HanaDB sap;
+    class OpenRouter ai;
+```
+
+### What Changed in the MCP Core
 
 New files were added under `backend/mcp`:
 
-- `toolRegistry.js`: defines 31 AI-callable tools with names, descriptions, and JSON input schemas
-- `toolHandlers.js`: maps each tool to existing backend functions in `server.js`
-- `mcpClient.js`: sends the user prompt and tool schemas to OpenRouter and receives the selected `tool_call`
-- `summarizer.js`: makes a second OpenRouter call to summarize raw tool results into a short user-facing sentence
+- `toolRegistry.js`: defines 31 AI-callable tools with names, descriptions, and JSON input schemas.
+- `toolHandlers.js`: maps each tool to existing backend functions in `server.js`.
+- `mcpClient.js`: sends the user prompt and tool schemas to OpenRouter and receives the selected `tool_call`.
+- `summarizer.js`: makes a second OpenRouter call to summarize raw tool results into a short user-facing sentence.
 
 `backend/server.js` was updated so `/chatbot/query` now tries the MCP flow first. If OpenRouter is not configured or the MCP call fails, the old rule-based chatbot flow still runs as fallback.
 
@@ -786,6 +855,56 @@ npm run dev
 ```powershell
 cd frontend
 npm run build
+```
+
+### Standalone MCP Server
+
+The standalone MCP server supports both `Stdio` transport for local clients and `SSE` transport for remote cloud hosting.
+
+#### 1. Setup Environment
+Define a `.env` in the `mcp-server` directory (or configure them as environment variables on your cloud provider):
+```env
+BACKEND_URL=http://localhost:5000     # Address of your running Express backend
+BASE_URL=https://your-tenant-dt.com   # SAP CPI Design-Time URL (optional, fallback)
+TOKEN_URL=https://your-tenant-oauth   # SAP CPI OAuth Endpoint (optional, fallback)
+CLIENT_ID=your-client-id              # SAP CPI OAuth Client ID (optional, fallback)
+CLIENT_SECRET=your-client-secret      # SAP CPI OAuth Client Secret (optional, fallback)
+```
+
+#### 2. Run Locally via Stdio
+To start the server using stdio transport (e.g. for connecting to Claude Desktop locally):
+```powershell
+cd mcp-server
+npm start
+```
+
+#### 3. Run Locally/Remotely via SSE (HTTP)
+To start the server using SSE transport (exposing endpoints over HTTP):
+```powershell
+cd mcp-server
+# Using environment variables
+$env:PORT="5001"; $env:SSE="true"; node server.js
+```
+The server will boot and expose:
+*   **SSE Handshake Endpoint:** `http://localhost:5001/sse`
+*   **Message Processing Endpoint:** `http://localhost:5001/messages`
+
+#### 4. Configure Claude Desktop Client
+To add the local MCP server to Claude Desktop, open your `claude_desktop_config.json` and insert:
+```json
+{
+  "mcpServers": {
+    "sap-cpi-tenant-access": {
+      "command": "node",
+      "args": [
+        "c:/Users/yashwanth.gr/Desktop/Tenant-Access/mcp-server/server.js"
+      ],
+      "env": {
+        "BACKEND_URL": "http://localhost:5000"
+      }
+    }
+  }
+}
 ```
 
 ## Important Notes

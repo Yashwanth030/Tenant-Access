@@ -135,7 +135,7 @@ const fetchODataResource = async ({
   preferNonEmpty = false,
   emptyMessage = "",
   itemType = "integration-resource",
-  maxItems = 25
+  maxItems = 500
 }) => {
   if (!token || !baseUrl) {
     return { error: "Connect a tenant first, then I can fetch that live tenant data." };
@@ -157,7 +157,7 @@ const fetchODataResource = async ({
       try {
         const response = await axios.get(endpoint, {
           headers: buildTenantHeaders(token),
-          timeout: 8000,
+          timeout: 30000,
           validateStatus: (status) => status >= 200 && status < 500
         });
 

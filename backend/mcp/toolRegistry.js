@@ -191,7 +191,12 @@ const MCP_TOOLS = [
       "List all SAP CPI integration packages in the connected tenant. Use for packages, package names, or browsing content.",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        packageName: {
+          type: "string",
+          description: "Optional package name or ID filter to search for a specific package."
+        }
+      },
       required: []
     }
   },
@@ -579,7 +584,7 @@ const MCP_TOOLS = [
   },
   {
     name: "delete_variable",
-    description: "Delete a variable from the connected tenant. Requires variableName and integrationFlow.",
+    description: "Delete a variable from the connected tenant. Requires variableName. Defaults to 'globally_defined' (global scope) if integrationFlow is not specified.",
     inputSchema: {
       type: "object",
       properties: {
@@ -589,15 +594,15 @@ const MCP_TOOLS = [
         },
         integrationFlow: {
           type: "string",
-          description: "Integration flow identifier for the variable."
+          description: "Integration flow identifier for the variable. Defaults to 'globally_defined' for global variables."
         }
       },
-      required: ["variableName", "integrationFlow"]
+      required: ["variableName"]
     }
   },
   {
     name: "update_variable",
-    description: "Update or edit the value of a variable on the connected tenant. Requires variableName, integrationFlow, and value.",
+    description: "Update or edit the value of a variable on the connected tenant. Requires variableName and value. Defaults to 'globally_defined' (global scope) if integrationFlow is not specified.",
     inputSchema: {
       type: "object",
       properties: {
@@ -607,14 +612,14 @@ const MCP_TOOLS = [
         },
         integrationFlow: {
           type: "string",
-          description: "Integration flow identifier for the variable."
+          description: "Integration flow identifier for the variable. Defaults to 'globally_defined' for global variables."
         },
         value: {
           type: "string",
           description: "The new value to set for the variable."
         }
       },
-      required: ["variableName", "integrationFlow", "value"]
+      required: ["variableName", "value"]
     }
   },
   {

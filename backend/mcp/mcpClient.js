@@ -37,7 +37,8 @@ const callOpenRouterWithTools = async ({ messages, tools, model }) => {
       temperature: 0.2,
       messages,
       tools,
-      tool_choice: "auto"
+      tool_choice: "auto",
+      max_tokens: 1000
     },
     {
       headers: {
@@ -59,6 +60,22 @@ const parseToolArguments = (toolCall) => {
   } catch {
     return {};
   }
+};
+
+const promptHeuristicSaysNoList = (prompt) => {
+  const normalized = String(prompt || "").trim().toLowerCase();
+  return (
+    normalized.includes("present") ||
+    normalized.includes("exist") ||
+    normalized.includes("there are") ||
+    normalized.includes("how many") ||
+    normalized.includes("count") ||
+    normalized.includes("status of") ||
+    normalized.includes("detail of") ||
+    /^is\s/i.test(normalized) ||
+    /^does\s/i.test(normalized) ||
+    /^has\s/i.test(normalized)
+  );
 };
 
 const runMcpChat = async ({ prompt, tenantContext }) => {
@@ -130,19 +147,22 @@ const runMcpChat = async ({ prompt, tenantContext }) => {
     };
   }
 
-  const summary = await summarizeToolResult({
+  const summaryResult = await summarizeToolResult({
     prompt,
     toolName,
     rawData: toolResult.rawData
   });
 
+  const showList = summaryResult ? summaryResult.showList : !promptHeuristicSaysNoList(prompt);
+  const summaryText = summaryResult ? summaryResult.summary : null;
+
   return {
-    message: toolResult.message || summary || `Done: ${toolName}`,
-    items: toolResult.items || [],
-    pendingItems: toolResult.pendingItems || [],
+    message: summaryText || toolResult.message || `Done: ${toolName}`,
+    items: showList ? (toolResult.items || []) : [],
+    pendingItems: showList ? (toolResult.pendingItems || []) : [],
     actions: toolResult.actions || [],
     debug: { tool: toolName, model: usedModel, params: toolParams }
   };
 };
 
-module.exports = { configureMcpTools, runMcpChat };
+module.exports = { configureMcpTools, runMcpChat, promptHeuristicSaysNoList };
