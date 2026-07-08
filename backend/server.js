@@ -620,7 +620,13 @@ app.post("/connectTenant", async (req, res) => {
             lastRefreshed: Date.now()
         });
 
-        const host = req.get("host") || "localhost:5000";
+        let host = req.headers["x-forwarded-host"] || req.get("host") || "localhost:5000";
+        if (req.headers.referer && host.includes("localhost")) {
+            try {
+                const refUrl = new URL(req.headers.referer);
+                host = refUrl.host;
+            } catch (e) {}
+        }
         const mcpHost = host.replace(/port\d+/, "port5001");
         const protocol = host.includes("-workspaces-ws-") ? "https" : req.protocol;
         const mcpServerUrl = `${protocol}://${mcpHost}/sse?token=${finalToken}`;
