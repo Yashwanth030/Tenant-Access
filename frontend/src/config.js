@@ -1,2 +1,3 @@
-// export const API_BASE_URL = "https://backend.cfapps.us10-001.hana.ondemand.com";
-export const API_BASE_URL = "http://localhost:5000";
+export const API_BASE_URL = window.location.hostname === "localhost"
+  ? "http://localhost:5000"
+  : "";
