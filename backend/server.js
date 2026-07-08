@@ -8,6 +8,8 @@ const nodemailer = require("nodemailer");
 const archiver = require("archiver");
 const app = express();
 const hana = require("@sap/hana-client");
+const crypto = require("crypto");
+const mcpTenantStore = new Map();
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); 
 app.use(express.text({ type: "text/*" }));
@@ -580,7 +582,7 @@ const getTriggerCredentials = () => {
 };
 
 app.post("/connectTenant", async (req, res) => {
-    let { clientId, clientSecret, tokenUrl, baseUrl } = req.body;
+    let { clientId, clientSecret, tokenUrl, baseUrl, mcpToken } = req.body;
 
     tokenUrl = cleanUrl(tokenUrl);
     baseUrl  = cleanUrl(baseUrl);
@@ -607,12 +609,30 @@ app.post("/connectTenant", async (req, res) => {
 
         const { apiBaseUrl, packages } = await fetchPackages(baseUrl, token);
 
+        const finalToken = mcpToken || crypto.randomBytes(24).toString("hex");
+        mcpTenantStore.set(finalToken, {
+            clientId,
+            clientSecret,
+            tokenUrl,
+            baseUrl: apiBaseUrl,
+            accessToken: token,
+            packages: packages || [],
+            lastRefreshed: Date.now()
+        });
+
+        const host = req.get("host") || "localhost:5000";
+        const mcpHost = host.replace(/port\d+/, "port5001");
+        const protocol = host.includes("-workspaces-ws-") ? "https" : req.protocol;
+        const mcpServerUrl = `${protocol}://${mcpHost}/sse?token=${finalToken}`;
+
         res.json({
             message: "Tenant Connected Successfully",
             packages,
             token: token,
             credentialSource: "tenant-session",
-            baseUrl: apiBaseUrl
+            baseUrl: apiBaseUrl,
+            mcpToken: finalToken,
+            mcpServerUrl
         });
 
     } catch (error) {
@@ -627,6 +647,59 @@ app.post("/connectTenant", async (req, res) => {
         });
     }
 });
+
+const refreshTenantToken = async (tenantConfig) => {
+    const tokenEndpoint = tenantConfig.tokenUrl.endsWith("/oauth/token")
+        ? tenantConfig.tokenUrl
+        : `${tenantConfig.tokenUrl}/oauth/token`;
+
+    const tokenResponse = await axios.post(
+        tokenEndpoint,
+        "grant_type=client_credentials",
+        {
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            auth: { username: tenantConfig.clientId, password: tenantConfig.clientSecret }
+        }
+    );
+
+    tenantConfig.accessToken = tokenResponse.data.access_token;
+    tenantConfig.lastRefreshed = Date.now();
+    return tenantConfig.accessToken;
+};
+
+app.get("/mcp/tenant-context", async (req, res) => {
+    const { token } = req.query;
+    if (!token) {
+        return res.status(400).json({ error: "Token is required." });
+    }
+
+    const tenantConfig = mcpTenantStore.get(token);
+    if (!tenantConfig) {
+        return res.status(404).json({ error: "Invalid token or tenant context not found." });
+    }
+
+    try {
+        // Refresh token if it is older than 45 minutes
+        if (Date.now() - tenantConfig.lastRefreshed > 45 * 60 * 1000) {
+            await refreshTenantToken(tenantConfig);
+        }
+
+        res.json({
+            token: tenantConfig.accessToken,
+            baseUrl: tenantConfig.baseUrl,
+            packages: tenantConfig.packages || []
+        });
+    } catch (err) {
+        console.error("Error refreshing MCP tenant token:", err.message);
+        // Fallback to cached token
+        res.json({
+            token: tenantConfig.accessToken,
+            baseUrl: tenantConfig.baseUrl,
+            packages: tenantConfig.packages || []
+        });
+    }
+});
+
 
 app.post("/getArtifacts", async (req, res) => {
     let { packageId, token, baseUrl } = req.body;

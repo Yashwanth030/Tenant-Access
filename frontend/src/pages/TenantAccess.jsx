@@ -74,6 +74,14 @@ const TenantAccess = () => {
   };
 
   useEffect(() => {
+    let token = localStorage.getItem("mcpToken");
+    if (!token) {
+      token = "mcp_" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      localStorage.setItem("mcpToken", token);
+    }
+  }, []);
+
+  useEffect(() => {
     if (isConnected) loadQueueCount();
   }, [isConnected]);
 
@@ -101,7 +109,8 @@ const TenantAccess = () => {
           clientId,
           clientSecret,
           tokenUrl: cleanToken,
-          baseUrl: cleanBase
+          baseUrl: cleanBase,
+          mcpToken: localStorage.getItem("mcpToken") || ""
         })
       });
 
@@ -115,6 +124,9 @@ const TenantAccess = () => {
         localStorage.setItem("baseUrl", result.baseUrl || cleanBase);
         localStorage.setItem("packages", JSON.stringify(result.packages || []));
         localStorage.setItem("tenantAccessComplete", "true");
+        if (result.mcpServerUrl) {
+          localStorage.setItem("mcpServerUrl", result.mcpServerUrl);
+        }
 
         setIsConnected(true);
       } else {
@@ -293,6 +305,48 @@ const TenantAccess = () => {
         </Typography>
       </Paper>
     </Stack>
+
+    {localStorage.getItem("mcpServerUrl") && (
+      <Box sx={{ width: "100%", mt: 1, pt: 3, borderTop: "1px solid rgba(255,255,255,0.2)" }}>
+        <Typography sx={{ color: "#ffffff", fontWeight: 600, fontSize: 18, mb: 1 }}>
+          Claude.ai & Cursor Integration (MCP)
+        </Typography>
+        <Typography sx={{ color: "rgba(255,255,255,0.8)", fontSize: 14, mb: 2 }}>
+          To use this tenant's tools directly in Cursor or Claude.ai, add a custom SSE connector with this URL:
+        </Typography>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <TextField
+            InputProps={{
+              readOnly: true,
+            }}
+            value={localStorage.getItem("mcpServerUrl")}
+            size="small"
+            sx={{
+              flex: 1,
+              backgroundColor: "rgba(255, 255, 255, 0.1)",
+              borderRadius: 1,
+              input: { color: "#ffffff", fontSize: 13, fontFamily: "monospace" },
+              "& .MuiOutlinedInput-notchedOutline": { border: "none" }
+            }}
+          />
+          <Button
+            variant="contained"
+            onClick={() => {
+              navigator.clipboard.writeText(localStorage.getItem("mcpServerUrl") || "");
+              alert("MCP URL copied to clipboard!");
+            }}
+            sx={{
+              backgroundColor: "#ffffff",
+              color: "#0d81b6",
+              height: 40,
+              "&:hover": { backgroundColor: "#f0f0f0" }
+            }}
+          >
+            Copy
+          </Button>
+        </Stack>
+      </Box>
+    )}
   </Stack>
 </Paper>
         ) : (

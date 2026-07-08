@@ -1,4 +1,8 @@
 import axios from "axios";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+export const tokenStorage = new AsyncLocalStorage();
+
 
 const DEFAULT_BACKEND_URL = "http://localhost:5000";
 const TENANT_CONTEXT_TTL_MS = 45 * 60 * 1000;
@@ -62,6 +66,39 @@ const connectTenantThroughBackend = async () => {
 };
 
 const getTenantContext = async () => {
+  const token = tokenStorage.getStore();
+
+  if (token) {
+    try {
+      const backendUrl = getBackendUrl();
+      const response = await axios.get(`${backendUrl}/mcp/tenant-context`, {
+        params: { token },
+        timeout: 15000
+      });
+
+      const { token: cpiToken, baseUrl, packages } = response.data || {};
+      if (!cpiToken || !baseUrl) {
+        throw new Error("Invalid tenant context returned from backend.");
+      }
+
+      return {
+        token: cpiToken,
+        baseUrl,
+        packages: Array.isArray(packages) ? packages : [],
+        source: `mcp-token-${token}`
+      };
+    } catch (err) {
+      console.error(`Error fetching tenant context for token ${token}:`, err.message);
+      throw new Error(`Failed to retrieve tenant context: ${err.message}`);
+    }
+  }
+
+  // Prevent fallback to local .env credentials when running as an exposed SSE server for security.
+  const isSse = process.argv.includes("--sse") || process.env.SSE === "true";
+  if (isSse) {
+    throw new Error("Access denied: A valid tenant session token is required to execute tools.");
+  }
+
   if (isFreshTenantContext(cachedTenantContext)) {
     return cachedTenantContext;
   }
