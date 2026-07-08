@@ -1,0 +1,23 @@
+# Root manifest.yml for SAP BTP Cloud Foundry Deployment
+schema-version: 1.0.0
+applications:
+  - name: tenant-access-backend
+    path: backend
+    memory: 256M
+    disk_quota: 512M
+    buildpacks:
+      - nodejs_buildpack
+    random-route: true
+    env:
+      NODE_ENV: production
+
+  - name: tenant-access-mcp-server
+    path: mcp-server
+    memory: 256M
+    disk_quota: 512M
+    buildpacks:
+      - nodejs_buildpack
+    random-route: true
+    env:
+      NODE_ENV: production
+      SSE: "true"
