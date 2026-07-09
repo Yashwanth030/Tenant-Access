@@ -81,6 +81,7 @@ if (isSse) {
           await transport.handlePostMessage(req, res);
           return;
         } catch (err) {
+          console.error(`Error handling post message for token ${token}:`, err);
           // Search next transport session
         }
       }
