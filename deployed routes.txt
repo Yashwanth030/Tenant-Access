@@ -1,0 +1,4 @@
+The Deployed Routes:
+Frontend UI: https://tenant-access-frontend-turbulent-impala-ma.cfapps.us10-001.hana.ondemand.com
+Backend API: https://tenant-access-backend-empathic-lemur-nl.cfapps.us10-001.hana.ondemand.com
+MCP Server (SSE): https://tenant-access-mcp-server-rested-quokka-an.cfapps.us10-001.hana.ondemand.com

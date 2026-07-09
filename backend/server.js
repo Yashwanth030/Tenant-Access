@@ -628,8 +628,10 @@ app.post("/connectTenant", async (req, res) => {
             } catch (e) {}
         }
         const mcpHost = host.replace(/port\d+/, "port5001");
-        const protocol = host.includes("-workspaces-ws-") ? "https" : req.protocol;
-        const mcpServerUrl = `${protocol}://${mcpHost}/sse?token=${finalToken}`;
+        const protocol = (host.includes("-workspaces-ws-") || host.includes(".cfapps.")) ? "https" : req.protocol;
+        const mcpServerUrl = process.env.MCP_SERVER_URL
+            ? `${process.env.MCP_SERVER_URL.replace(/\/+$/, "")}/sse?token=${finalToken}`
+            : `${protocol}://${mcpHost}/sse?token=${finalToken}`;
 
         res.json({
             message: "Tenant Connected Successfully",
