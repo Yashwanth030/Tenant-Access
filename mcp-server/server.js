@@ -54,6 +54,17 @@ if (isSse) {
     const { token } = req.query;
     console.log(`New SSE client connection requested. Token: ${token || "none"}`);
     
+    // Intercept writeHead to inject proxy buffering bypass headers
+    const originalWriteHead = res.writeHead;
+    res.writeHead = function(statusCode, headers) {
+      const mergedHeaders = {
+        ...headers,
+        "X-Accel-Buffering": "no",
+        "Cache-Control": "no-cache, no-transform"
+      };
+      return originalWriteHead.call(this, statusCode, mergedHeaders);
+    };
+
     const messageUrl = token ? `/messages?token=${encodeURIComponent(token)}` : "/messages";
     const transport = new SSEServerTransport(messageUrl, res);
     transport.token = token;
