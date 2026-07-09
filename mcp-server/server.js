@@ -16,26 +16,30 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, "../backend/.env") });
 dotenv.config({ path: path.resolve(__dirname, ".env"), override: true });
 
-const server = new Server(
-  {
-    name: "tenant-access-sap-cpi",
-    version: "0.1.0"
-  },
-  {
-    capabilities: {
-      tools: {}
+const createMcpServer = () => {
+  const mcpServer = new Server(
+    {
+      name: "tenant-access-sap-cpi",
+      version: "0.1.0"
+    },
+    {
+      capabilities: {
+        tools: {}
+      }
     }
-  }
-);
+  );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: TOOLS
-}));
+  mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: TOOLS
+  }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args = {} } = request.params || {};
-  return executeTool(name, args);
-});
+  mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args = {} } = request.params || {};
+    return executeTool(name, args);
+  });
+
+  return mcpServer;
+};
 
 const isSse = process.argv.includes("--sse") || process.env.SSE === "true";
 
@@ -56,7 +60,8 @@ if (isSse) {
     
     activeTransports.push(transport);
 
-    await server.connect(transport);
+    const connectionServer = createMcpServer();
+    await connectionServer.connect(transport);
 
     req.on("close", () => {
       console.log(`SSE client connection closed. Token: ${token || "none"}`);
@@ -90,7 +95,8 @@ if (isSse) {
   });
 } else {
   const transport = new StdioServerTransport();
-  server.connect(transport).catch((error) => {
+  const connectionServer = createMcpServer();
+  connectionServer.connect(transport).catch((error) => {
     console.error("MCP server failed to start:", error);
     process.exit(1);
   });
