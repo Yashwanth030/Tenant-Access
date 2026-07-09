@@ -50,7 +50,7 @@ if (isSse) {
 
   let activeTransports = [];
 
-  app.get("/sse", async (req, res) => {
+  app.all("/sse", async (req, res) => {
     const { token } = req.query;
     console.log(`New SSE client connection requested. Token: ${token || "none"}`);
     
