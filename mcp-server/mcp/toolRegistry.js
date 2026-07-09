@@ -750,5 +750,5 @@ const getMcpToolsForOpenRouter = () =>
     }
   }));
 
-export { MCP_TOOLS, getMcpToolsForOpenRouter, MESSAGE_STATUSES, TIME_RANGES };
+export { MCP_TOOLS, MCP_TOOLS as TOOLS, getMcpToolsForOpenRouter, MESSAGE_STATUSES, TIME_RANGES };
 export default MCP_TOOLS;
