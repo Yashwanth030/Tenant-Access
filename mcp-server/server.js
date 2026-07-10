@@ -48,10 +48,56 @@ if (isSse) {
   app.use(cors());
   app.use(express.json());
 
+  const getRequestToken = (req) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+      return authHeader.substring(7).trim();
+    }
+    return req.query.token;
+  };
+
+  app.get("/oauth/authorize", (req, res) => {
+    const { redirect_uri, state } = req.query;
+    if (!redirect_uri) {
+      return res.status(400).send("Missing redirect_uri parameter");
+    }
+    try {
+      const callbackUrl = new URL(redirect_uri);
+      callbackUrl.searchParams.set("code", "mock_authorization_code");
+      if (state) {
+        callbackUrl.searchParams.set("state", state);
+      }
+      return res.redirect(callbackUrl.toString());
+    } catch (e) {
+      return res.status(400).send("Invalid redirect_uri parameter");
+    }
+  });
+
+  app.post("/oauth/token", (req, res) => {
+    let clientSecret = req.body?.client_secret || req.query?.client_secret;
+    
+    if (!clientSecret && req.headers.authorization) {
+      try {
+        const parts = req.headers.authorization.split(" ");
+        if (parts[0].toLowerCase() === "basic") {
+          const credentials = Buffer.from(parts[1], "base64").toString("utf8").split(":");
+          clientSecret = credentials[1];
+        }
+      } catch (e) {}
+    }
+    
+    const accessToken = clientSecret || "default_token";
+    res.json({
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: 31536000
+    });
+  });
+
   let activeTransports = [];
 
   app.all("/sse", async (req, res) => {
-    const { token } = req.query;
+    const token = getRequestToken(req);
     console.log(`New SSE client connection requested. Token: ${token || "none"}`);
     
     // Intercept writeHead to inject proxy buffering bypass headers
@@ -81,7 +127,7 @@ if (isSse) {
   });
 
   app.post("/messages", async (req, res) => {
-    const token = req.query.token;
+    const token = getRequestToken(req);
     
     await tokenStorage.run(token, async () => {
       for (const transport of activeTransports) {
