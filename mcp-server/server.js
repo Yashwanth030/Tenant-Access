@@ -56,6 +56,25 @@ if (isSse) {
     return req.query.token;
   };
 
+  app.get("/.well-known/oauth-protected-resource", (req, res) => {
+    const issuer = process.env.MCP_SERVER_URL || `${req.protocol}://${req.get("host")}`;
+    res.json({
+      authorization_servers: [issuer]
+    });
+  });
+
+  app.get("/.well-known/oauth-authorization-server", (req, res) => {
+    const issuer = process.env.MCP_SERVER_URL || `${req.protocol}://${req.get("host")}`;
+    res.json({
+      issuer: issuer,
+      authorization_endpoint: `${issuer}/oauth/authorize`,
+      token_endpoint: `${issuer}/oauth/token`,
+      response_types_supported: ["code"],
+      grant_types_supported: ["authorization_code"],
+      code_challenge_methods_supported: ["S256"]
+    });
+  });
+
   app.get("/oauth/authorize", (req, res) => {
     const { redirect_uri, state } = req.query;
     if (!redirect_uri) {
